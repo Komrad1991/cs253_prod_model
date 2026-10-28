@@ -1,0 +1,74 @@
+[
+  {
+    "Name": "App",
+    "Projects": [
+      {
+        "Path": "src\\ProdModel.App\\ProdModel.App.csproj",
+        "Action": "Start",
+        "DebugTarget": "App"
+      },
+      {
+        "Path": "src\\ProdModel.Cli\\ProdModel.Cli.csproj",
+        "Action": "None"
+      },
+      {
+        "Path": "src\\ProdModel.Core\\ProdModel.Core.csproj",
+        "Action": "None"
+      }
+    ]
+  },
+  {
+    "Name": "App (1 hero)",
+    "Projects": [
+      {
+        "Path": "src\\ProdModel.App\\ProdModel.App.csproj",
+        "Action": "Start",
+        "DebugTarget": "App (1 hero)"
+      },
+      {
+        "Path": "src\\ProdModel.Cli\\ProdModel.Cli.csproj",
+        "Action": "None"
+      },
+      {
+        "Path": "src\\ProdModel.Core\\ProdModel.Core.csproj",
+        "Action": "None"
+      }
+    ]
+  },
+  {
+    "Name": "App (6 heroes)",
+    "Projects": [
+      {
+        "Path": "src\\ProdModel.App\\ProdModel.App.csproj",
+        "Action": "Start",
+        "DebugTarget": "App (6 heroes)"
+      },
+      {
+        "Path": "src\\ProdModel.Cli\\ProdModel.Cli.csproj",
+        "Action": "None"
+      },
+      {
+        "Path": "src\\ProdModel.Core\\ProdModel.Core.csproj",
+        "Action": "None"
+      }
+    ]
+  },
+  {
+    "Name": "App (cycles)",
+    "Projects": [
+      {
+        "Path": "src\\ProdModel.App\\ProdModel.App.csproj",
+        "Action": "Start",
+        "DebugTarget": "App (cycles)"
+      },
+      {
+        "Path": "src\\ProdModel.Cli\\ProdModel.Cli.csproj",
+        "Action": "None"
+      },
+      {
+        "Path": "src\\ProdModel.Core\\ProdModel.Core.csproj",
+        "Action": "None"
+      }
+    ]
+  }
+]

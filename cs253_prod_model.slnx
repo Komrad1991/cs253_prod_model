@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="src/ProdModel.App/ProdModel.App.csproj" />
+  <Project Path="src/ProdModel.Cli/ProdModel.Cli.csproj" />
+  <Project Path="src/ProdModel.Core/ProdModel.Core.csproj" />
+</Solution>

@@ -1,0 +1,1511 @@
+# ============================================================================
+#  Deadlock: контр-предметы — база знаний продукционной модели
+#
+#  Предметная область: герои Deadlock, предметы и контр-предметы.
+#  Цепочка вывода: герой -> угроза -> наш контр-предмет -> предмет врага
+#  в ответ -> второй контр-предмет.
+#  Формат: обычный текстовый файл (.txt); генератор — tools/gen_kb.py.
+#
+#  Слои вывода: 0 состав -> 1 угрозы -> 2 потребности -> 3 кандидаты
+#               -> 4 шортлист -> 5 выбор -> 6 предмет врага в ответ
+#               -> 7 его угроза -> 8 вторая потребность -> 9 второй контр
+# ============================================================================
+
+kb "Deadlock: контр-предметы под состав противника"
+description "Продукционная модель: герои -> угрозы -> потребности -> контр-предметы. Коэффициенты уверенности отражают силу угрозы и надёжность ответа."
+
+# --- сорта (домены для перебора целей с переменными) ---
+sort hero = Abrams, Bebop, Dynamo, GreyTalon, Haze, Infernus, Ivy, Kelvin, LadyGeist, Lash, McGinnis, MoKrill, Paradox, Pocket, Seven, Shiv, Vindicta, Viscous, Wraith, Yamato, Warden, Mirage, Holliday, Sinclair
+sort item = MysticShot, Berserker, ToxicBullets, Headhunter, EscalatingResilience, SlowingHex, Sharpshooter, Inhibitor, CripplingHeadshot, HuntersAura, Silencer, SpiritualOverflow, ExtraStamina, HealingRite, BulletArmor, SpiritArmor, DebuffReducer, ReactiveBarrier, DivineBarrier, MetalSkin, ReturnFire, SuperiorStamina, Fortitude, DebuffRemover, Colossus, SoulRebirth, DivinersKevlar, Leech, MysticBurst, Knockdown, EtherealShift, WarpStone, SilenceGlyph, EscalatingExposure, Curse, Unstoppable, BoundlessSpirit
+sort threat = bullet_dps, burst_magic, dot_pressure, hard_cc, tank_frontline, dive, poke, invisibility, aoe_channel, execute, zone_control, mobility, sustain, item_silence, item_regen, item_immunity, item_purge, item_disable
+sort need = anti_bullet, anti_magic, anti_dot, anti_cc, anti_tank, anti_dive, anti_poke, anti_invis, anti_channel, anti_execute, anti_zone, anti_mobility, anti_heal, sustain_self, damage_core, anti_silence, anti_regen, anti_immunity, anti_purge, anti_disable
+sort slot = weapon, vitality, spirit
+
+# --- факты: герои ---
+fact hero(Abrams)
+fact hero(Bebop)
+fact hero(Dynamo)
+fact hero(GreyTalon)
+fact hero(Haze)
+fact hero(Infernus)
+fact hero(Ivy)
+fact hero(Kelvin)
+fact hero(LadyGeist)
+fact hero(Lash)
+fact hero(McGinnis)
+fact hero(MoKrill)
+fact hero(Paradox)
+fact hero(Pocket)
+fact hero(Seven)
+fact hero(Shiv)
+fact hero(Vindicta)
+fact hero(Viscous)
+fact hero(Wraith)
+fact hero(Yamato)
+fact hero(Warden)
+fact hero(Mirage)
+fact hero(Holliday)
+fact hero(Sinclair)
+
+# --- факты: профили героев (какие угрозы создаёт герой) ---
+fact hero_tag(Abrams, tank_frontline) cf=0.90
+fact hero_tag(Abrams, dive) cf=0.85
+fact hero_tag(Abrams, hard_cc) cf=0.80
+fact hero_tag(Bebop, hard_cc) cf=0.90
+fact hero_tag(Bebop, burst_magic) cf=0.85
+fact hero_tag(Bebop, poke) cf=0.70
+fact hero_tag(Dynamo, aoe_channel) cf=0.90
+fact hero_tag(Dynamo, hard_cc) cf=0.85
+fact hero_tag(Dynamo, tank_frontline) cf=0.80
+fact hero_tag(GreyTalon, poke) cf=0.90
+fact hero_tag(GreyTalon, burst_magic) cf=0.80
+fact hero_tag(GreyTalon, execute) cf=0.70
+fact hero_tag(Haze, bullet_dps) cf=0.95
+fact hero_tag(Haze, invisibility) cf=0.85
+fact hero_tag(Haze, aoe_channel) cf=0.90
+fact hero_tag(Infernus, dot_pressure) cf=0.90
+fact hero_tag(Infernus, aoe_channel) cf=0.85
+fact hero_tag(Infernus, zone_control) cf=0.80
+fact hero_tag(Ivy, dive) cf=0.85
+fact hero_tag(Ivy, hard_cc) cf=0.80
+fact hero_tag(Ivy, mobility) cf=0.80
+fact hero_tag(Kelvin, zone_control) cf=0.90
+fact hero_tag(Kelvin, aoe_channel) cf=0.80
+fact hero_tag(Kelvin, sustain) cf=0.80
+fact hero_tag(LadyGeist, burst_magic) cf=0.85
+fact hero_tag(LadyGeist, execute) cf=0.85
+fact hero_tag(LadyGeist, sustain) cf=0.75
+fact hero_tag(Lash, dive) cf=0.90
+fact hero_tag(Lash, hard_cc) cf=0.85
+fact hero_tag(Lash, aoe_channel) cf=0.80
+fact hero_tag(McGinnis, zone_control) cf=0.90
+fact hero_tag(McGinnis, bullet_dps) cf=0.85
+fact hero_tag(McGinnis, aoe_channel) cf=0.80
+fact hero_tag(MoKrill, hard_cc) cf=0.95
+fact hero_tag(MoKrill, tank_frontline) cf=0.85
+fact hero_tag(MoKrill, dive) cf=0.85
+fact hero_tag(Paradox, burst_magic) cf=0.85
+fact hero_tag(Paradox, hard_cc) cf=0.80
+fact hero_tag(Paradox, mobility) cf=0.75
+fact hero_tag(Pocket, burst_magic) cf=0.90
+fact hero_tag(Pocket, aoe_channel) cf=0.80
+fact hero_tag(Pocket, mobility) cf=0.80
+fact hero_tag(Seven, aoe_channel) cf=0.95
+fact hero_tag(Seven, zone_control) cf=0.85
+fact hero_tag(Seven, poke) cf=0.70
+fact hero_tag(Shiv, dive) cf=0.90
+fact hero_tag(Shiv, execute) cf=0.85
+fact hero_tag(Shiv, sustain) cf=0.85
+fact hero_tag(Vindicta, poke) cf=0.95
+fact hero_tag(Vindicta, execute) cf=0.85
+fact hero_tag(Vindicta, mobility) cf=0.80
+fact hero_tag(Viscous, tank_frontline) cf=0.85
+fact hero_tag(Viscous, dive) cf=0.85
+fact hero_tag(Viscous, aoe_channel) cf=0.75
+fact hero_tag(Wraith, bullet_dps) cf=0.85
+fact hero_tag(Wraith, hard_cc) cf=0.85
+fact hero_tag(Wraith, mobility) cf=0.70
+fact hero_tag(Yamato, dive) cf=0.90
+fact hero_tag(Yamato, execute) cf=0.85
+fact hero_tag(Yamato, burst_magic) cf=0.80
+fact hero_tag(Warden, tank_frontline) cf=0.85
+fact hero_tag(Warden, zone_control) cf=0.90
+fact hero_tag(Warden, bullet_dps) cf=0.80
+fact hero_tag(Mirage, poke) cf=0.80
+fact hero_tag(Mirage, burst_magic) cf=0.80
+fact hero_tag(Mirage, mobility) cf=0.80
+fact hero_tag(Holliday, hard_cc) cf=0.85
+fact hero_tag(Holliday, mobility) cf=0.80
+fact hero_tag(Holliday, bullet_dps) cf=0.75
+fact hero_tag(Sinclair, burst_magic) cf=0.85
+fact hero_tag(Sinclair, hard_cc) cf=0.80
+fact hero_tag(Sinclair, mobility) cf=0.70
+
+# --- факты: предметы ---
+fact item(MysticShot)
+fact item_slot(MysticShot, weapon)
+fact item_cost(MysticShot, 500)
+fact item_tier(MysticShot, cheap)
+fact item_provides(MysticShot, damage_core)
+
+fact item(Berserker)
+fact item_slot(Berserker, weapon)
+fact item_cost(Berserker, 1250)
+fact item_tier(Berserker, cheap)
+fact item_provides(Berserker, damage_core)
+
+fact item(ToxicBullets)
+fact item_slot(ToxicBullets, weapon)
+fact item_cost(ToxicBullets, 3200)
+fact item_tier(ToxicBullets, mid)
+fact item_provides(ToxicBullets, anti_heal)
+fact item_provides(ToxicBullets, anti_tank)
+
+fact item(Headhunter)
+fact item_slot(Headhunter, weapon)
+fact item_cost(Headhunter, 3500)
+fact item_tier(Headhunter, mid)
+fact item_provides(Headhunter, anti_poke)
+fact item_provides(Headhunter, damage_core)
+
+fact item(EscalatingResilience)
+fact item_slot(EscalatingResilience, weapon)
+fact item_cost(EscalatingResilience, 3200)
+fact item_tier(EscalatingResilience, mid)
+fact item_provides(EscalatingResilience, anti_bullet)
+
+fact item(SlowingHex)
+fact item_slot(SlowingHex, weapon)
+fact item_cost(SlowingHex, 1750)
+fact item_tier(SlowingHex, mid)
+fact item_active(SlowingHex)
+fact item_provides(SlowingHex, anti_mobility)
+fact item_provides(SlowingHex, anti_dive)
+
+fact item(Sharpshooter)
+fact item_slot(Sharpshooter, weapon)
+fact item_cost(Sharpshooter, 4250)
+fact item_tier(Sharpshooter, expensive)
+fact item_provides(Sharpshooter, anti_poke)
+fact item_provides(Sharpshooter, damage_core)
+
+fact item(Inhibitor)
+fact item_slot(Inhibitor, weapon)
+fact item_cost(Inhibitor, 6400)
+fact item_tier(Inhibitor, expensive)
+fact item_provides(Inhibitor, anti_heal)
+fact item_provides(Inhibitor, anti_mobility)
+fact item_provides(Inhibitor, anti_regen)
+
+fact item(CripplingHeadshot)
+fact item_slot(CripplingHeadshot, weapon)
+fact item_cost(CripplingHeadshot, 6400)
+fact item_tier(CripplingHeadshot, expensive)
+fact item_provides(CripplingHeadshot, anti_tank)
+
+fact item(HuntersAura)
+fact item_slot(HuntersAura, weapon)
+fact item_cost(HuntersAura, 6400)
+fact item_tier(HuntersAura, expensive)
+fact item_provides(HuntersAura, anti_tank)
+fact item_provides(HuntersAura, anti_bullet)
+
+fact item(Silencer)
+fact item_slot(Silencer, weapon)
+fact item_cost(Silencer, 6400)
+fact item_tier(Silencer, expensive)
+fact item_active(Silencer)
+fact item_provides(Silencer, anti_channel)
+fact item_provides(Silencer, anti_mobility)
+
+fact item(SpiritualOverflow)
+fact item_slot(SpiritualOverflow, weapon)
+fact item_cost(SpiritualOverflow, 6400)
+fact item_tier(SpiritualOverflow, expensive)
+fact item_provides(SpiritualOverflow, damage_core)
+
+fact item(ExtraStamina)
+fact item_slot(ExtraStamina, vitality)
+fact item_cost(ExtraStamina, 500)
+fact item_tier(ExtraStamina, cheap)
+fact item_provides(ExtraStamina, anti_dive)
+
+fact item(HealingRite)
+fact item_slot(HealingRite, vitality)
+fact item_cost(HealingRite, 500)
+fact item_tier(HealingRite, cheap)
+fact item_active(HealingRite)
+fact item_provides(HealingRite, sustain_self)
+
+fact item(BulletArmor)
+fact item_slot(BulletArmor, vitality)
+fact item_cost(BulletArmor, 1250)
+fact item_tier(BulletArmor, cheap)
+fact item_provides(BulletArmor, anti_bullet)
+
+fact item(SpiritArmor)
+fact item_slot(SpiritArmor, vitality)
+fact item_cost(SpiritArmor, 1250)
+fact item_tier(SpiritArmor, cheap)
+fact item_provides(SpiritArmor, anti_magic)
+
+fact item(DebuffReducer)
+fact item_slot(DebuffReducer, vitality)
+fact item_cost(DebuffReducer, 1250)
+fact item_tier(DebuffReducer, cheap)
+fact item_provides(DebuffReducer, anti_dot)
+
+fact item(ReactiveBarrier)
+fact item_slot(ReactiveBarrier, vitality)
+fact item_cost(ReactiveBarrier, 1250)
+fact item_tier(ReactiveBarrier, cheap)
+fact item_active(ReactiveBarrier)
+fact item_provides(ReactiveBarrier, anti_cc)
+fact item_provides(ReactiveBarrier, anti_magic)
+
+fact item(DivineBarrier)
+fact item_slot(DivineBarrier, vitality)
+fact item_cost(DivineBarrier, 3000)
+fact item_tier(DivineBarrier, mid)
+fact item_active(DivineBarrier)
+fact item_provides(DivineBarrier, anti_magic)
+fact item_provides(DivineBarrier, anti_execute)
+
+fact item(MetalSkin)
+fact item_slot(MetalSkin, vitality)
+fact item_cost(MetalSkin, 3000)
+fact item_tier(MetalSkin, mid)
+fact item_active(MetalSkin)
+fact item_provides(MetalSkin, anti_bullet)
+fact item_provides(MetalSkin, anti_channel)
+
+fact item(ReturnFire)
+fact item_slot(ReturnFire, vitality)
+fact item_cost(ReturnFire, 3000)
+fact item_tier(ReturnFire, mid)
+fact item_active(ReturnFire)
+fact item_provides(ReturnFire, anti_bullet)
+
+fact item(SuperiorStamina)
+fact item_slot(SuperiorStamina, vitality)
+fact item_cost(SuperiorStamina, 4250)
+fact item_tier(SuperiorStamina, expensive)
+fact item_provides(SuperiorStamina, anti_dive)
+
+fact item(Fortitude)
+fact item_slot(Fortitude, vitality)
+fact item_cost(Fortitude, 4250)
+fact item_tier(Fortitude, expensive)
+fact item_provides(Fortitude, anti_poke)
+fact item_provides(Fortitude, sustain_self)
+
+fact item(DebuffRemover)
+fact item_slot(DebuffRemover, vitality)
+fact item_cost(DebuffRemover, 4250)
+fact item_tier(DebuffRemover, expensive)
+fact item_active(DebuffRemover)
+fact item_provides(DebuffRemover, anti_dot)
+fact item_provides(DebuffRemover, anti_cc)
+
+fact item(Colossus)
+fact item_slot(Colossus, vitality)
+fact item_cost(Colossus, 6400)
+fact item_tier(Colossus, expensive)
+fact item_active(Colossus)
+fact item_provides(Colossus, anti_dive)
+fact item_provides(Colossus, sustain_self)
+
+fact item(SoulRebirth)
+fact item_slot(SoulRebirth, vitality)
+fact item_cost(SoulRebirth, 6400)
+fact item_tier(SoulRebirth, expensive)
+fact item_provides(SoulRebirth, anti_execute)
+
+fact item(DivinersKevlar)
+fact item_slot(DivinersKevlar, vitality)
+fact item_cost(DivinersKevlar, 6400)
+fact item_tier(DivinersKevlar, expensive)
+fact item_provides(DivinersKevlar, anti_magic)
+fact item_provides(DivinersKevlar, anti_cc)
+fact item_provides(DivinersKevlar, anti_disable)
+
+fact item(Leech)
+fact item_slot(Leech, vitality)
+fact item_cost(Leech, 6400)
+fact item_tier(Leech, expensive)
+fact item_provides(Leech, sustain_self)
+
+fact item(MysticBurst)
+fact item_slot(MysticBurst, spirit)
+fact item_cost(MysticBurst, 500)
+fact item_tier(MysticBurst, cheap)
+fact item_provides(MysticBurst, damage_core)
+
+fact item(Knockdown)
+fact item_slot(Knockdown, spirit)
+fact item_cost(Knockdown, 3000)
+fact item_tier(Knockdown, mid)
+fact item_active(Knockdown)
+fact item_provides(Knockdown, anti_channel)
+fact item_provides(Knockdown, anti_poke)
+
+fact item(EtherealShift)
+fact item_slot(EtherealShift, spirit)
+fact item_cost(EtherealShift, 3000)
+fact item_tier(EtherealShift, mid)
+fact item_active(EtherealShift)
+fact item_provides(EtherealShift, anti_execute)
+fact item_provides(EtherealShift, anti_zone)
+
+fact item(WarpStone)
+fact item_slot(WarpStone, spirit)
+fact item_cost(WarpStone, 3000)
+fact item_tier(WarpStone, mid)
+fact item_active(WarpStone)
+fact item_provides(WarpStone, anti_dive)
+fact item_provides(WarpStone, anti_zone)
+
+fact item(SilenceGlyph)
+fact item_slot(SilenceGlyph, spirit)
+fact item_cost(SilenceGlyph, 3000)
+fact item_tier(SilenceGlyph, mid)
+fact item_active(SilenceGlyph)
+fact item_provides(SilenceGlyph, anti_channel)
+fact item_provides(SilenceGlyph, anti_mobility)
+fact item_provides(SilenceGlyph, anti_invis)
+
+fact item(EscalatingExposure)
+fact item_slot(EscalatingExposure, spirit)
+fact item_cost(EscalatingExposure, 4250)
+fact item_tier(EscalatingExposure, expensive)
+fact item_provides(EscalatingExposure, anti_tank)
+
+fact item(Curse)
+fact item_slot(Curse, spirit)
+fact item_cost(Curse, 6400)
+fact item_tier(Curse, expensive)
+fact item_active(Curse)
+fact item_provides(Curse, anti_channel)
+fact item_provides(Curse, anti_mobility)
+fact item_provides(Curse, anti_heal)
+fact item_provides(Curse, anti_immunity)
+fact item_provides(Curse, anti_purge)
+
+fact item(Unstoppable)
+fact item_slot(Unstoppable, spirit)
+fact item_cost(Unstoppable, 6400)
+fact item_tier(Unstoppable, expensive)
+fact item_active(Unstoppable)
+fact item_provides(Unstoppable, anti_cc)
+fact item_provides(Unstoppable, anti_silence)
+
+fact item(BoundlessSpirit)
+fact item_slot(BoundlessSpirit, spirit)
+fact item_cost(BoundlessSpirit, 6400)
+fact item_tier(BoundlessSpirit, expensive)
+fact item_provides(BoundlessSpirit, damage_core)
+fact item_provides(BoundlessSpirit, sustain_self)
+
+# --- факты: жёсткие контр-предметы (закрывают потребность целиком) ---
+fact hard_counter(MetalSkin, anti_bullet)
+fact hard_counter(MetalSkin, anti_channel)
+fact hard_counter(BulletArmor, anti_bullet)
+fact hard_counter(ReturnFire, anti_bullet)
+fact hard_counter(EscalatingResilience, anti_bullet)
+fact hard_counter(HuntersAura, anti_bullet)
+fact hard_counter(SpiritArmor, anti_magic)
+fact hard_counter(DivineBarrier, anti_magic)
+fact hard_counter(DivinersKevlar, anti_magic)
+fact hard_counter(ReactiveBarrier, anti_cc)
+fact hard_counter(Unstoppable, anti_cc)
+fact hard_counter(DebuffRemover, anti_dot)
+fact hard_counter(DebuffRemover, anti_cc)
+fact hard_counter(DebuffReducer, anti_dot)
+fact hard_counter(EtherealShift, anti_execute)
+fact hard_counter(SoulRebirth, anti_execute)
+fact hard_counter(Knockdown, anti_channel)
+fact hard_counter(Curse, anti_channel)
+fact hard_counter(SilenceGlyph, anti_channel)
+fact hard_counter(ToxicBullets, anti_heal)
+fact hard_counter(Inhibitor, anti_heal)
+fact hard_counter(Curse, anti_heal)
+fact hard_counter(CripplingHeadshot, anti_tank)
+fact hard_counter(EscalatingExposure, anti_tank)
+fact hard_counter(SlowingHex, anti_mobility)
+fact hard_counter(Silencer, anti_mobility)
+fact hard_counter(SilenceGlyph, anti_mobility)
+fact hard_counter(Colossus, anti_dive)
+fact hard_counter(WarpStone, anti_dive)
+fact hard_counter(Fortitude, anti_poke)
+fact hard_counter(Knockdown, anti_poke)
+fact hard_counter(HealingRite, sustain_self)
+fact hard_counter(Leech, sustain_self)
+fact hard_counter(Sharpshooter, anti_poke)
+fact hard_counter(Unstoppable, anti_silence)
+fact hard_counter(Inhibitor, anti_regen)
+fact hard_counter(Curse, anti_immunity)
+fact hard_counter(Curse, anti_purge)
+fact hard_counter(DivinersKevlar, anti_disable)
+
+# --- факты: чем противник отвечает на наш контр-предмет ---
+fact enemy_answers(MetalSkin, SilenceGlyph)
+fact enemy_answers(ToxicBullets, Fortitude)
+fact enemy_answers(Knockdown, Unstoppable)
+fact enemy_answers(SlowingHex, DebuffRemover)
+fact enemy_answers(EtherealShift, Curse)
+
+# Входные данные (состав противника) сюда не входят: это отдельные файлы
+# data/input/*.txt, где только строки fact enemy(...).
+
+# ============================================================================
+#  ПРАВИЛА: слой 1 — состав противника превращается в угрозы
+# ============================================================================
+
+rule THR_ABRAMS_TANK_FRONTLINE cf=0.90
+  if enemy(Abrams)
+  then threat(tank_frontline)
+  why "Abrams играет от передней линии: Infernal Resilience возвращает часть урона в здоровье."
+
+rule THR_ABRAMS_DIVE cf=0.85
+  if enemy(Abrams)
+  then threat(dive)
+  why "Shoulder Charge врывается в строй и разбрасывает его."
+
+rule THR_ABRAMS_HARD_CC cf=0.80
+  if enemy(Abrams)
+  then threat(hard_cc)
+  why "Таран и Seismic Impact — жёсткий контроль зоны."
+
+rule THR_BEBOP_HARD_CC cf=0.90
+  if enemy(Bebop)
+  then threat(hard_cc)
+  why "Hook вытаскивает цель из позиции — жёсткий контроль на дистанции."
+
+rule THR_BEBOP_BURST_MAGIC cf=0.85
+  if enemy(Bebop)
+  then threat(burst_magic)
+  why "Hyper Beam и Sticky Bomb дают магический берст."
+
+rule THR_BEBOP_POKE cf=0.70
+  if enemy(Bebop)
+  then threat(poke)
+  why "Держит дистанцию и наказывает за выход вперёд."
+
+rule THR_DYNAMO_AOE_CHANNEL cf=0.90
+  if enemy(Dynamo)
+  then threat(aoe_channel)
+  why "Singularity собирает команду в одну точку — канальный AoE-ультимейт."
+
+rule THR_DYNAMO_HARD_CC cf=0.85
+  if enemy(Dynamo)
+  then threat(hard_cc)
+  why "Kinetic Pulse и Singularity держат цель."
+
+rule THR_DYNAMO_TANK_FRONTLINE cf=0.80
+  if enemy(Dynamo)
+  then threat(tank_frontline)
+  why "Dynamo играет впереди и имеет большой запас здоровья."
+
+rule THR_GREYTALON_POKE cf=0.90
+  if enemy(GreyTalon)
+  then threat(poke)
+  why "Charged Shot и Rain of Arrows наказывают с дистанции."
+
+rule THR_GREYTALON_BURST_MAGIC cf=0.80
+  if enemy(GreyTalon)
+  then threat(burst_magic)
+  why "Большой магический залп по площади."
+
+rule THR_GREYTALON_EXECUTE cf=0.70
+  if enemy(GreyTalon)
+  then threat(execute)
+  why "Guided Owl добивает убегающих."
+
+rule THR_HAZE_BULLET_DPS cf=0.95
+  if enemy(Haze)
+  then threat(bullet_dps)
+  why "Fixation и пулемётный урон: постоянное пулевое давление."
+
+rule THR_HAZE_INVISIBILITY cf=0.85
+  if enemy(Haze)
+  then threat(invisibility)
+  why "Smoke Bomb даёт невидимость и уход из фокуса."
+
+rule THR_HAZE_AOE_CHANNEL cf=0.90
+  if enemy(Haze)
+  then threat(aoe_channel)
+  why "Bullet Dance — канальный AoE по всем в радиусе."
+
+rule THR_INFERNUS_DOT_PRESSURE cf=0.90
+  if enemy(Infernus)
+  then threat(dot_pressure)
+  why "Catalyst и Afterburn жгут цель длительным уроном."
+
+rule THR_INFERNUS_AOE_CHANNEL cf=0.85
+  if enemy(Infernus)
+  then threat(aoe_channel)
+  why "Concussive Combustion — канальный AoE-взрыв."
+
+rule THR_INFERNUS_ZONE_CONTROL cf=0.80
+  if enemy(Infernus)
+  then threat(zone_control)
+  why "Flame Dash и огонь держат зону."
+
+rule THR_IVY_DIVE cf=0.85
+  if enemy(Ivy)
+  then threat(dive)
+  why "Kudzu и Air Drop залетают в тыл."
+
+rule THR_IVY_HARD_CC cf=0.80
+  if enemy(Ivy)
+  then threat(hard_cc)
+  why "Опутывание лишает мобильности."
+
+rule THR_IVY_MOBILITY cf=0.80
+  if enemy(Ivy)
+  then threat(mobility)
+  why "Быстро меняет позицию и уходит."
+
+rule THR_KELVIN_ZONE_CONTROL cf=0.90
+  if enemy(Kelvin)
+  then threat(zone_control)
+  why "Ice Path и Arctic Beam контролируют пространство."
+
+rule THR_KELVIN_AOE_CHANNEL cf=0.80
+  if enemy(Kelvin)
+  then threat(aoe_channel)
+  why "Frozen Shelter — канальный купол, меняющий бой."
+
+rule THR_KELVIN_SUSTAIN cf=0.80
+  if enemy(Kelvin)
+  then threat(sustain)
+  why "Лечит союзников и себя."
+
+rule THR_LADYGEIST_BURST_MAGIC cf=0.85
+  if enemy(LadyGeist)
+  then threat(burst_magic)
+  why "Essence Bomb и Malice дают магический берст."
+
+rule THR_LADYGEIST_EXECUTE cf=0.85
+  if enemy(LadyGeist)
+  then threat(execute)
+  why "Soul Exchange меняет здоровье местами — казнь для раненого."
+
+rule THR_LADYGEIST_SUSTAIN cf=0.75
+  if enemy(LadyGeist)
+  then threat(sustain)
+  why "Life Drain восстанавливает здоровье."
+
+rule THR_LASH_DIVE cf=0.90
+  if enemy(Lash)
+  then threat(dive)
+  why "Death Slam и прыжки — агрессивный заход в тыл."
+
+rule THR_LASH_HARD_CC cf=0.85
+  if enemy(Lash)
+  then threat(hard_cc)
+  why "Подброс и удар держат цель в воздухе."
+
+rule THR_LASH_AOE_CHANNEL cf=0.80
+  if enemy(Lash)
+  then threat(aoe_channel)
+  why "Death Slam накрывает площадь."
+
+rule THR_MCGINNIS_ZONE_CONTROL cf=0.90
+  if enemy(McGinnis)
+  then threat(zone_control)
+  why "Турели и стена запирают зону."
+
+rule THR_MCGINNIS_BULLET_DPS cf=0.85
+  if enemy(McGinnis)
+  then threat(bullet_dps)
+  why "Турели и пулемёт дают устойчивый пулевой урон."
+
+rule THR_MCGINNIS_AOE_CHANNEL cf=0.80
+  if enemy(McGinnis)
+  then threat(aoe_channel)
+  why "Heavy Barrage — канальный обстрел площади."
+
+rule THR_MOKRILL_HARD_CC cf=0.95
+  if enemy(MoKrill)
+  then threat(hard_cc)
+  why "Combo хватает и держит цель — самый жёсткий контроль."
+
+rule THR_MOKRILL_TANK_FRONTLINE cf=0.85
+  if enemy(MoKrill)
+  then threat(tank_frontline)
+  why "Много здоровья, играет впереди."
+
+rule THR_MOKRILL_DIVE cf=0.85
+  if enemy(MoKrill)
+  then threat(dive)
+  why "Burrow заходит под землёй в тыл."
+
+rule THR_PARADOX_BURST_MAGIC cf=0.85
+  if enemy(Paradox)
+  then threat(burst_magic)
+  why "Pulse Grenade и Carbine — магический берст."
+
+rule THR_PARADOX_HARD_CC cf=0.80
+  if enemy(Paradox)
+  then threat(hard_cc)
+  why "Time Wall и Swap ломают позицию."
+
+rule THR_PARADOX_MOBILITY cf=0.75
+  if enemy(Paradox)
+  then threat(mobility)
+  why "Быстро меняет позицию."
+
+rule THR_POCKET_BURST_MAGIC cf=0.90
+  if enemy(Pocket)
+  then threat(burst_magic)
+  why "Barrage и Affliction — сильный магический урон."
+
+rule THR_POCKET_AOE_CHANNEL cf=0.80
+  if enemy(Pocket)
+  then threat(aoe_channel)
+  why "Affliction накрывает площадь."
+
+rule THR_POCKET_MOBILITY cf=0.80
+  if enemy(Pocket)
+  then threat(mobility)
+  why "Satchel и Cloak дают уход."
+
+rule THR_SEVEN_AOE_CHANNEL cf=0.95
+  if enemy(Seven)
+  then threat(aoe_channel)
+  why "Storm Cloud — канальный AoE, выжигающий зону."
+
+rule THR_SEVEN_ZONE_CONTROL cf=0.85
+  if enemy(Seven)
+  then threat(zone_control)
+  why "Lightning Ball и Storm держат территорию."
+
+rule THR_SEVEN_POKE cf=0.70
+  if enemy(Seven)
+  then threat(poke)
+  why "Static Charge наказывает за кучность."
+
+rule THR_SHIV_DIVE cf=0.90
+  if enemy(Shiv)
+  then threat(dive)
+  why "Slice and Dice залетает в тыл."
+
+rule THR_SHIV_EXECUTE cf=0.85
+  if enemy(Shiv)
+  then threat(execute)
+  why "Killing Blow казнит раненых."
+
+rule THR_SHIV_SUSTAIN cf=0.85
+  if enemy(Shiv)
+  then threat(sustain)
+  why "Bloodletting откладывает урон и лечится."
+
+rule THR_VINDICTA_POKE cf=0.95
+  if enemy(Vindicta)
+  then threat(poke)
+  why "Снайпер: Assassinate с дистанции."
+
+rule THR_VINDICTA_EXECUTE cf=0.85
+  if enemy(Vindicta)
+  then threat(execute)
+  why "Assassinate добивает с большого расстояния."
+
+rule THR_VINDICTA_MOBILITY cf=0.80
+  if enemy(Vindicta)
+  then threat(mobility)
+  why "Полёт и уход из-под удара."
+
+rule THR_VISCOUS_TANK_FRONTLINE cf=0.85
+  if enemy(Viscous)
+  then threat(tank_frontline)
+  why "The Cube и Goo Ball — живучесть."
+
+rule THR_VISCOUS_DIVE cf=0.85
+  if enemy(Viscous)
+  then threat(dive)
+  why "Goo Ball влетает в строй."
+
+rule THR_VISCOUS_AOE_CHANNEL cf=0.75
+  if enemy(Viscous)
+  then threat(aoe_channel)
+  why "Puddle Punch и Goo Ball накрывают площадь."
+
+rule THR_WRAITH_BULLET_DPS cf=0.85
+  if enemy(Wraith)
+  then threat(bullet_dps)
+  why "Full Auto — пулевой берст."
+
+rule THR_WRAITH_HARD_CC cf=0.85
+  if enemy(Wraith)
+  then threat(hard_cc)
+  why "Telekinesis поднимает и держит."
+
+rule THR_WRAITH_MOBILITY cf=0.70
+  if enemy(Wraith)
+  then threat(mobility)
+  why "Project Mind — телепорт."
+
+rule THR_YAMATO_DIVE cf=0.90
+  if enemy(Yamato)
+  then threat(dive)
+  why "Flying Strike влетает в цель."
+
+rule THR_YAMATO_EXECUTE cf=0.85
+  if enemy(Yamato)
+  then threat(execute)
+  why "Shadow Transformation и Crimson Slash добивают."
+
+rule THR_YAMATO_BURST_MAGIC cf=0.80
+  if enemy(Yamato)
+  then threat(burst_magic)
+  why "Power Slash — сильный магический удар."
+
+rule THR_WARDEN_TANK_FRONTLINE cf=0.85
+  if enemy(Warden)
+  then threat(tank_frontline)
+  why "Играет от передней линии."
+
+rule THR_WARDEN_ZONE_CONTROL cf=0.90
+  if enemy(Warden)
+  then threat(zone_control)
+  why "Ультимейт запирает зону."
+
+rule THR_WARDEN_BULLET_DPS cf=0.80
+  if enemy(Warden)
+  then threat(bullet_dps)
+  why "Пулевое давление с передовой."
+
+rule THR_MIRAGE_POKE cf=0.80
+  if enemy(Mirage)
+  then threat(poke)
+  why "Держит дистанцию и наказывает."
+
+rule THR_MIRAGE_BURST_MAGIC cf=0.80
+  if enemy(Mirage)
+  then threat(burst_magic)
+  why "Fire Beetles и метка дают берст."
+
+rule THR_MIRAGE_MOBILITY cf=0.80
+  if enemy(Mirage)
+  then threat(mobility)
+  why "Телепорт и уход."
+
+rule THR_HOLLIDAY_HARD_CC cf=0.85
+  if enemy(Holliday)
+  then threat(hard_cc)
+  why "Лассо вытаскивает цель."
+
+rule THR_HOLLIDAY_MOBILITY cf=0.80
+  if enemy(Holliday)
+  then threat(mobility)
+  why "Быстро перемещается по карте."
+
+rule THR_HOLLIDAY_BULLET_DPS cf=0.75
+  if enemy(Holliday)
+  then threat(bullet_dps)
+  why "Пулевой урон вблизи."
+
+rule THR_SINCLAIR_BURST_MAGIC cf=0.85
+  if enemy(Sinclair)
+  then threat(burst_magic)
+  why "Магический берст по площади."
+
+rule THR_SINCLAIR_HARD_CC cf=0.80
+  if enemy(Sinclair)
+  then threat(hard_cc)
+  why "Контроль и кража ультимейта."
+
+rule THR_SINCLAIR_MOBILITY cf=0.70
+  if enemy(Sinclair)
+  then threat(mobility)
+  why "Уход и перестановка."
+
+# ============================================================================
+#  ПРАВИЛА: слой 2 — угрозы превращаются в потребности сборки
+# ============================================================================
+
+rule NEED_BULLET_DPS_ANTI_BULLET cf=0.85
+  if threat(bullet_dps)
+  then need(anti_bullet)
+  why "Пулевое давление снимается бронёй от пуль и предметами, блокирующими пули."
+
+rule NEED_BURST_MAGIC_ANTI_MAGIC cf=0.85
+  if threat(burst_magic)
+  then need(anti_magic)
+  why "Магический берст требует сопротивления духу или барьера."
+
+rule NEED_DOT_PRESSURE_ANTI_DOT cf=0.85
+  if threat(dot_pressure)
+  then need(anti_dot)
+  why "Длительный урон снимается очищением дебаффов."
+
+rule NEED_HARD_CC_ANTI_CC cf=0.90
+  if threat(hard_cc)
+  then need(anti_cc)
+  why "Жёсткий контроль требует иммунитета или сокращения длительности."
+
+rule NEED_TANK_FRONTLINE_ANTI_TANK cf=0.80
+  if threat(tank_frontline)
+  then need(anti_tank)
+  why "Танка нельзя пробить без снижения брони и процентов здоровья."
+
+rule NEED_DIVE_ANTI_DIVE cf=0.85
+  if threat(dive)
+  then need(anti_dive)
+  why "Заход в тыл требует мобильности и живучести под фокусом."
+
+rule NEED_POKE_ANTI_POKE cf=0.80
+  if threat(poke)
+  then need(anti_poke)
+  why "Дальний урон снимается регенерацией и дистанцией."
+
+rule NEED_INVISIBILITY_ANTI_INVIS cf=0.80
+  if threat(invisibility)
+  then need(anti_invis)
+  why "Невидимость наказывается сайленсом и замедлением."
+
+rule NEED_AOE_CHANNEL_ANTI_CHANNEL cf=0.90
+  if threat(aoe_channel)
+  then need(anti_channel)
+  why "Канальный AoE срывается сайленсом, станом или иммунитетом к пулям."
+
+rule NEED_EXECUTE_ANTI_EXECUTE cf=0.85
+  if threat(execute)
+  then need(anti_execute)
+  why "Казнь предотвращается неуязвимостью, воскрешением и щитами."
+
+rule NEED_ZONE_CONTROL_ANTI_ZONE cf=0.75
+  if threat(zone_control)
+  then need(anti_zone)
+  why "Зону контроля нужно покидать телепортом или переживать."
+
+rule NEED_MOBILITY_ANTI_MOBILITY cf=0.70
+  if threat(mobility)
+  then need(anti_mobility)
+  why "Мобильную цель нужно замедлять и лишать рывков."
+
+rule NEED_SUSTAIN_ANTI_HEAL cf=0.85
+  if threat(sustain)
+  then need(anti_heal)
+  why "Лечение и вампиризм снимаются сокращением лечения."
+
+rule NEED_POKE_SUSTAIN_SELF cf=0.70
+  if threat(poke)
+  then need(sustain_self)
+  why "Против дальнего урона помогает собственный регенерация и восстановление."
+
+rule NEED_DOT_PRESSURE_SUSTAIN_SELF cf=0.65
+  if threat(dot_pressure)
+  then need(sustain_self)
+  why "Против длительного урона нужен собственный запас восстановления."
+
+rule NEED_TANK_FRONTLINE_DAMAGE_CORE cf=0.70
+  if threat(tank_frontline)
+  then need(damage_core)
+  why "Против танка нужен собственный устойчивый урон, иначе его не пробить."
+
+# --- комбинации угроз: две угрозы вместе требуют отдельного ответа ---
+rule COMBO_BULLET_DPS_INVISIBILITY cf=0.90
+  if threat(bullet_dps) and threat(invisibility)
+  then need(anti_invis)
+  why "Невидимость плюс пулевой урон: без контроля невидимости пулевое давление не остановить."
+
+rule COMBO_AOE_CHANNEL_HARD_CC cf=0.90
+  if threat(aoe_channel) and threat(hard_cc)
+  then need(anti_cc)
+  why "Канал под прикрытием контроля: нужен иммунитет или срыв канала."
+
+rule COMBO_EXECUTE_POKE cf=0.88
+  if threat(execute) and threat(poke)
+  then need(anti_execute)
+  why "Добивающий урон с дистанции: нужен предмет, переживающий казнь."
+
+rule COMBO_DIVE_TANK_FRONTLINE cf=0.85
+  if threat(dive) and threat(tank_frontline)
+  then need(anti_dive)
+  why "Танк врывается в тыл: нужна мобильность и живучесть."
+
+rule COMBO_DOT_PRESSURE_SUSTAIN cf=0.88
+  if threat(dot_pressure) and threat(sustain)
+  then need(anti_heal)
+  why "Урон по времени плюс лечение: без сокращения лечения цель не убить."
+
+rule COMBO_BURST_MAGIC_EXECUTE cf=0.80
+  if threat(burst_magic) and threat(execute)
+  then need(anti_magic)
+  why "Магический берст добивает: нужен барьер от духа."
+
+rule COMBO_BULLET_DPS_TANK_FRONTLINE cf=0.80
+  if threat(bullet_dps) and threat(tank_frontline)
+  then need(anti_tank)
+  why "Пулевой танк: нужно снижение брони и процентов здоровья."
+
+rule COMBO_ZONE_CONTROL_AOE_CHANNEL cf=0.85
+  if threat(zone_control) and threat(aoe_channel)
+  then need(anti_zone)
+  why "Зона плюс канал: из зоны нужно выходить, а канал срывать."
+
+# ============================================================================
+#  ПРАВИЛА: слой 3 — потребность + предмет -> кандидат в сборку
+# ============================================================================
+
+rule CAND_GENERIC cf=0.75
+  if need(?n) and item_provides(?i, ?n)
+  then candidate(?i, ?n)
+  why "Любой предмет, который закрывает потребность, становится кандидатом."
+
+rule CNT_METALSKIN_ANTI_BULLET cf=0.93
+  if need(anti_bullet) and hard_counter(MetalSkin, anti_bullet)
+  then candidate(MetalSkin, anti_bullet)
+  why "MetalSkin закрывает потребность anti_bullet целиком, а не частично."
+
+rule CNT_METALSKIN_ANTI_CHANNEL cf=0.93
+  if need(anti_channel) and hard_counter(MetalSkin, anti_channel)
+  then candidate(MetalSkin, anti_channel)
+  why "MetalSkin закрывает потребность anti_channel целиком, а не частично."
+
+rule CNT_BULLETARMOR_ANTI_BULLET cf=0.93
+  if need(anti_bullet) and hard_counter(BulletArmor, anti_bullet)
+  then candidate(BulletArmor, anti_bullet)
+  why "BulletArmor закрывает потребность anti_bullet целиком, а не частично."
+
+rule CNT_RETURNFIRE_ANTI_BULLET cf=0.93
+  if need(anti_bullet) and hard_counter(ReturnFire, anti_bullet)
+  then candidate(ReturnFire, anti_bullet)
+  why "ReturnFire закрывает потребность anti_bullet целиком, а не частично."
+
+rule CNT_ESCALATINGRESILIENCE_ANTI_BULLET cf=0.93
+  if need(anti_bullet) and hard_counter(EscalatingResilience, anti_bullet)
+  then candidate(EscalatingResilience, anti_bullet)
+  why "EscalatingResilience закрывает потребность anti_bullet целиком, а не частично."
+
+rule CNT_HUNTERSAURA_ANTI_BULLET cf=0.93
+  if need(anti_bullet) and hard_counter(HuntersAura, anti_bullet)
+  then candidate(HuntersAura, anti_bullet)
+  why "HuntersAura закрывает потребность anti_bullet целиком, а не частично."
+
+rule CNT_SPIRITARMOR_ANTI_MAGIC cf=0.93
+  if need(anti_magic) and hard_counter(SpiritArmor, anti_magic)
+  then candidate(SpiritArmor, anti_magic)
+  why "SpiritArmor закрывает потребность anti_magic целиком, а не частично."
+
+rule CNT_DIVINEBARRIER_ANTI_MAGIC cf=0.93
+  if need(anti_magic) and hard_counter(DivineBarrier, anti_magic)
+  then candidate(DivineBarrier, anti_magic)
+  why "DivineBarrier закрывает потребность anti_magic целиком, а не частично."
+
+rule CNT_DIVINERSKEVLAR_ANTI_MAGIC cf=0.93
+  if need(anti_magic) and hard_counter(DivinersKevlar, anti_magic)
+  then candidate(DivinersKevlar, anti_magic)
+  why "DivinersKevlar закрывает потребность anti_magic целиком, а не частично."
+
+rule CNT_REACTIVEBARRIER_ANTI_CC cf=0.93
+  if need(anti_cc) and hard_counter(ReactiveBarrier, anti_cc)
+  then candidate(ReactiveBarrier, anti_cc)
+  why "ReactiveBarrier закрывает потребность anti_cc целиком, а не частично."
+
+rule CNT_UNSTOPPABLE_ANTI_CC cf=0.93
+  if need(anti_cc) and hard_counter(Unstoppable, anti_cc)
+  then candidate(Unstoppable, anti_cc)
+  why "Unstoppable закрывает потребность anti_cc целиком, а не частично."
+
+rule CNT_DEBUFFREMOVER_ANTI_DOT cf=0.93
+  if need(anti_dot) and hard_counter(DebuffRemover, anti_dot)
+  then candidate(DebuffRemover, anti_dot)
+  why "DebuffRemover закрывает потребность anti_dot целиком, а не частично."
+
+rule CNT_DEBUFFREMOVER_ANTI_CC cf=0.93
+  if need(anti_cc) and hard_counter(DebuffRemover, anti_cc)
+  then candidate(DebuffRemover, anti_cc)
+  why "DebuffRemover закрывает потребность anti_cc целиком, а не частично."
+
+rule CNT_DEBUFFREDUCER_ANTI_DOT cf=0.93
+  if need(anti_dot) and hard_counter(DebuffReducer, anti_dot)
+  then candidate(DebuffReducer, anti_dot)
+  why "DebuffReducer закрывает потребность anti_dot целиком, а не частично."
+
+rule CNT_ETHEREALSHIFT_ANTI_EXECUTE cf=0.93
+  if need(anti_execute) and hard_counter(EtherealShift, anti_execute)
+  then candidate(EtherealShift, anti_execute)
+  why "EtherealShift закрывает потребность anti_execute целиком, а не частично."
+
+rule CNT_SOULREBIRTH_ANTI_EXECUTE cf=0.93
+  if need(anti_execute) and hard_counter(SoulRebirth, anti_execute)
+  then candidate(SoulRebirth, anti_execute)
+  why "SoulRebirth закрывает потребность anti_execute целиком, а не частично."
+
+rule CNT_KNOCKDOWN_ANTI_CHANNEL cf=0.93
+  if need(anti_channel) and hard_counter(Knockdown, anti_channel)
+  then candidate(Knockdown, anti_channel)
+  why "Knockdown закрывает потребность anti_channel целиком, а не частично."
+
+rule CNT_CURSE_ANTI_CHANNEL cf=0.93
+  if need(anti_channel) and hard_counter(Curse, anti_channel)
+  then candidate(Curse, anti_channel)
+  why "Curse закрывает потребность anti_channel целиком, а не частично."
+
+rule CNT_SILENCEGLYPH_ANTI_CHANNEL cf=0.93
+  if need(anti_channel) and hard_counter(SilenceGlyph, anti_channel)
+  then candidate(SilenceGlyph, anti_channel)
+  why "SilenceGlyph закрывает потребность anti_channel целиком, а не частично."
+
+rule CNT_TOXICBULLETS_ANTI_HEAL cf=0.93
+  if need(anti_heal) and hard_counter(ToxicBullets, anti_heal)
+  then candidate(ToxicBullets, anti_heal)
+  why "ToxicBullets закрывает потребность anti_heal целиком, а не частично."
+
+rule CNT_INHIBITOR_ANTI_HEAL cf=0.93
+  if need(anti_heal) and hard_counter(Inhibitor, anti_heal)
+  then candidate(Inhibitor, anti_heal)
+  why "Inhibitor закрывает потребность anti_heal целиком, а не частично."
+
+rule CNT_CURSE_ANTI_HEAL cf=0.93
+  if need(anti_heal) and hard_counter(Curse, anti_heal)
+  then candidate(Curse, anti_heal)
+  why "Curse закрывает потребность anti_heal целиком, а не частично."
+
+rule CNT_CRIPPLINGHEADSHOT_ANTI_TANK cf=0.93
+  if need(anti_tank) and hard_counter(CripplingHeadshot, anti_tank)
+  then candidate(CripplingHeadshot, anti_tank)
+  why "CripplingHeadshot закрывает потребность anti_tank целиком, а не частично."
+
+rule CNT_ESCALATINGEXPOSURE_ANTI_TANK cf=0.93
+  if need(anti_tank) and hard_counter(EscalatingExposure, anti_tank)
+  then candidate(EscalatingExposure, anti_tank)
+  why "EscalatingExposure закрывает потребность anti_tank целиком, а не частично."
+
+rule CNT_SLOWINGHEX_ANTI_MOBILITY cf=0.93
+  if need(anti_mobility) and hard_counter(SlowingHex, anti_mobility)
+  then candidate(SlowingHex, anti_mobility)
+  why "SlowingHex закрывает потребность anti_mobility целиком, а не частично."
+
+rule CNT_SILENCER_ANTI_MOBILITY cf=0.93
+  if need(anti_mobility) and hard_counter(Silencer, anti_mobility)
+  then candidate(Silencer, anti_mobility)
+  why "Silencer закрывает потребность anti_mobility целиком, а не частично."
+
+rule CNT_SILENCEGLYPH_ANTI_MOBILITY cf=0.93
+  if need(anti_mobility) and hard_counter(SilenceGlyph, anti_mobility)
+  then candidate(SilenceGlyph, anti_mobility)
+  why "SilenceGlyph закрывает потребность anti_mobility целиком, а не частично."
+
+rule CNT_COLOSSUS_ANTI_DIVE cf=0.93
+  if need(anti_dive) and hard_counter(Colossus, anti_dive)
+  then candidate(Colossus, anti_dive)
+  why "Colossus закрывает потребность anti_dive целиком, а не частично."
+
+rule CNT_WARPSTONE_ANTI_DIVE cf=0.93
+  if need(anti_dive) and hard_counter(WarpStone, anti_dive)
+  then candidate(WarpStone, anti_dive)
+  why "WarpStone закрывает потребность anti_dive целиком, а не частично."
+
+rule CNT_FORTITUDE_ANTI_POKE cf=0.93
+  if need(anti_poke) and hard_counter(Fortitude, anti_poke)
+  then candidate(Fortitude, anti_poke)
+  why "Fortitude закрывает потребность anti_poke целиком, а не частично."
+
+rule CNT_KNOCKDOWN_ANTI_POKE cf=0.93
+  if need(anti_poke) and hard_counter(Knockdown, anti_poke)
+  then candidate(Knockdown, anti_poke)
+  why "Knockdown закрывает потребность anti_poke целиком, а не частично."
+
+rule CNT_HEALINGRITE_SUSTAIN_SELF cf=0.93
+  if need(sustain_self) and hard_counter(HealingRite, sustain_self)
+  then candidate(HealingRite, sustain_self)
+  why "HealingRite закрывает потребность sustain_self целиком, а не частично."
+
+rule CNT_LEECH_SUSTAIN_SELF cf=0.93
+  if need(sustain_self) and hard_counter(Leech, sustain_self)
+  then candidate(Leech, sustain_self)
+  why "Leech закрывает потребность sustain_self целиком, а не частично."
+
+rule CNT_SHARPSHOOTER_ANTI_POKE cf=0.93
+  if need(anti_poke) and hard_counter(Sharpshooter, anti_poke)
+  then candidate(Sharpshooter, anti_poke)
+  why "Sharpshooter закрывает потребность anti_poke целиком, а не частично."
+
+rule CNT_UNSTOPPABLE_ANTI_SILENCE cf=0.93
+  if need(anti_silence) and hard_counter(Unstoppable, anti_silence)
+  then candidate(Unstoppable, anti_silence)
+  why "Unstoppable закрывает потребность anti_silence целиком, а не частично."
+
+rule CNT_INHIBITOR_ANTI_REGEN cf=0.93
+  if need(anti_regen) and hard_counter(Inhibitor, anti_regen)
+  then candidate(Inhibitor, anti_regen)
+  why "Inhibitor закрывает потребность anti_regen целиком, а не частично."
+
+rule CNT_CURSE_ANTI_IMMUNITY cf=0.93
+  if need(anti_immunity) and hard_counter(Curse, anti_immunity)
+  then candidate(Curse, anti_immunity)
+  why "Curse закрывает потребность anti_immunity целиком, а не частично."
+
+rule CNT_CURSE_ANTI_PURGE cf=0.93
+  if need(anti_purge) and hard_counter(Curse, anti_purge)
+  then candidate(Curse, anti_purge)
+  why "Curse закрывает потребность anti_purge целиком, а не частично."
+
+rule CNT_DIVINERSKEVLAR_ANTI_DISABLE cf=0.93
+  if need(anti_disable) and hard_counter(DivinersKevlar, anti_disable)
+  then candidate(DivinersKevlar, anti_disable)
+  why "DivinersKevlar закрывает потребность anti_disable целиком, а не частично."
+
+rule SIT_HAZE_METALSKIN cf=0.97
+  if need(anti_channel) and enemy(Haze)
+  then candidate(MetalSkin, anti_channel)
+  why "Metal Skin перекрывает окно Bullet Dance: пули не попадают."
+
+rule SIT_SEVEN_CURSE cf=0.95
+  if need(anti_channel) and enemy(Seven)
+  then candidate(Curse, anti_channel)
+  why "Curse снимает канал Storm Cloud и запрещает предметы."
+
+rule SIT_VINDICTA_KNOCKDOWN cf=0.93
+  if need(anti_poke) and enemy(Vindicta)
+  then candidate(Knockdown, anti_poke)
+  why "Knockdown сбивает летящую Vindicta и срывает позицию."
+
+rule SIT_MOKRILL_UNSTOPPABLE cf=0.95
+  if need(anti_cc) and enemy(MoKrill)
+  then candidate(Unstoppable, anti_cc)
+  why "Unstoppable не даёт Combo удержать цель."
+
+rule SIT_INFERNUS_DEBUFFREMOVER cf=0.94
+  if need(anti_dot) and enemy(Infernus)
+  then candidate(DebuffRemover, anti_dot)
+  why "Debuff Remover снимает Catalyst и Afterburn."
+
+rule SIT_LADYGEIST_ETHEREALSHIFT cf=0.92
+  if need(anti_execute) and enemy(LadyGeist)
+  then candidate(EtherealShift, anti_execute)
+  why "Ethereal Shift переживает Soul Exchange."
+
+rule SIT_ABRAMS_TOXICBULLETS cf=0.90
+  if need(anti_heal) and enemy(Abrams)
+  then candidate(ToxicBullets, anti_heal)
+  why "Toxic Bullets режут лечение Abrams и его регенерацию."
+
+rule SIT_WRAITH_REACTIVEBARRIER cf=0.88
+  if need(anti_cc) and enemy(Wraith)
+  then candidate(ReactiveBarrier, anti_cc)
+  why "Reactive Barrier гасит Telekinesis и даёт щит."
+
+rule SIT_YAMATO_SOULREBIRTH cf=0.92
+  if need(anti_execute) and enemy(Yamato)
+  then candidate(SoulRebirth, anti_execute)
+  why "Soul Rebirth возвращает в бой после Killing Blow."
+
+rule SIT_BEBOP_REACTIVEBARRIER cf=0.90
+  if need(anti_magic) and enemy(Bebop)
+  then candidate(ReactiveBarrier, anti_magic)
+  why "Reactive Barrier съедает Hook-комбо и магический берст."
+
+rule SIT_POCKET_DIVINEBARRIER cf=0.88
+  if need(anti_magic) and enemy(Pocket)
+  then candidate(DivineBarrier, anti_magic)
+  why "Divine Barrier перекрывает Affliction."
+
+rule SIT_SHIV_COLOSSUS cf=0.90
+  if need(anti_dive) and enemy(Shiv)
+  then candidate(Colossus, anti_dive)
+  why "Colossus переживает заход Shiv и даёт контроль."
+
+rule SIT_LASH_WARPSTONE cf=0.88
+  if need(anti_dive) and enemy(Lash)
+  then candidate(WarpStone, anti_dive)
+  why "Warp Stone выводит из-под Death Slam."
+
+rule SIT_KELVIN_ETHEREALSHIFT cf=0.85
+  if need(anti_zone) and enemy(Kelvin)
+  then candidate(EtherealShift, anti_zone)
+  why "Ethereal Shift переживает купол и обстрел."
+
+rule SIT_MCGINNIS_SILENCEGLYPH cf=0.90
+  if need(anti_channel) and enemy(McGinnis)
+  then candidate(SilenceGlyph, anti_channel)
+  why "Silence Glyph срывает Heavy Barrage."
+
+rule SIT_DYNAMO_CURSE cf=0.93
+  if need(anti_channel) and enemy(Dynamo)
+  then candidate(Curse, anti_channel)
+  why "Curse срывает Singularity до сбора команды."
+
+rule SIT_GREYTALON_SHARPSHOOTER cf=0.80
+  if need(anti_poke) and enemy(GreyTalon)
+  then candidate(Sharpshooter, anti_poke)
+  why "Sharpshooter отвечает на дальний урон."
+
+rule SIT_VISCOUS_WARPSTONE cf=0.82
+  if need(anti_dive) and enemy(Viscous)
+  then candidate(WarpStone, anti_dive)
+  why "Warp Stone уводит из-под Goo Ball."
+
+# ============================================================================
+#  ПРАВИЛА: слои 4-6 — шортлист, выбор, рекомендация
+# ============================================================================
+
+rule BUILD_SHORTLIST cf=1.00
+  if candidate(?i, ?n)
+  then shortlist(?i, ?n)
+  why "Кандидат проходит в шортлист сборки."
+
+rule BUILD_PICK cf=0.95
+  if shortlist(?i, ?n)
+  then pick(?i, ?n)
+  why "Шортлист превращается в конкретный выбор предмета."
+
+rule BUILD_RECOMMEND cf=1.00
+  if pick(?i, ?n)
+  then recommended(?i, ?n)
+  why "Выбранный предмет становится рекомендацией с обоснованием."
+
+rule BUILD_ACTIVE cf=1.00
+  if pick(?i, ?n) and item_active(?i)
+  then active_pick(?i, ?n)
+  why "Активные предметы занимают отдельный слот актива, их число ограничено."
+
+rule BUILD_EXPENSIVE cf=1.00
+  if pick(?i, ?n) and item_tier(?i, expensive)
+  then expensive_pick(?i, ?n)
+  why "Дорогой предмет требует отдельного бюджетного решения."
+
+rule BUILD_CHEAP cf=1.00
+  if pick(?i, ?n) and item_tier(?i, cheap)
+  then cheap_pick(?i, ?n)
+  why "Дешёвый предмет можно взять раньше, не дожидаясь полного бюджета."
+
+rule PRIO_HAZE_ANTIBULLET cf=0.95
+  if enemy(Haze) and threat(bullet_dps)
+  then need(anti_bullet)
+  why "Haze — главный источник пулевого давления в этом составе: защита от пуль обязательна."
+
+rule PRIO_SEVEN_ANTICHANNEL cf=0.93
+  if enemy(Seven) and threat(aoe_channel)
+  then need(anti_channel)
+  why "Storm Cloud Seven — решающий канал боя: нужен срыв канала, а не просто защита."
+
+# ============================================================================
+#  ПРАВИЛА: предупреждения о ключевых угрозах
+# ============================================================================
+
+rule WARN_SEVEN_AOE_CHANNEL cf=0.95
+  if enemy(Seven) and need(aoe_channel)
+  then warning(channel_ult_threat)
+  why "Storm Cloud накрывает точку — нужен срыв канала или выход из зоны."
+
+rule WARN_ABRAMS_SUSTAIN cf=0.90
+  if enemy(Abrams) and need(sustain)
+  then warning(sustain_tank)
+  why "Abrams живёт за счёт лечения: без сокращения лечения он не умирает."
+
+rule WARN_MOKRILL_HARD_CC cf=0.92
+  if enemy(MoKrill) and need(hard_cc)
+  then warning(combo_lockdown)
+  why "Combo — самый длинный контроль в игре: нужен иммунитет."
+
+rule WARN_HAZE_AOE_CHANNEL cf=0.90
+  if enemy(Haze) and need(aoe_channel)
+  then warning(haze_ult_window)
+  why "Bullet Dance убивает за одно окно: нужен Metal Skin или срыв."
+
+rule WARN_VINDICTA_EXECUTE cf=0.85
+  if enemy(Vindicta) and need(execute)
+  then warning(execute_window)
+  why "Assassinate добивает с дистанции: нужен предмет, переживающий казнь."
+
+rule WARN_TWO_DEFENSES cf=0.80
+  if need(anti_bullet) and need(anti_magic)
+  then warning(two_defense_slots)
+  why "Нужны две линии защиты одновременно — планируйте слоты и бюджет."
+
+# ============================================================================
+#  ПРАВИЛА: ответ врага. Противник видит наш контр-предмет и покупает
+#  свой — под него нужен ВТОРОЙ контр-предмет.
+# ============================================================================
+
+rule ANS_METALSKIN_SILENCEGLYPH cf=0.92
+  if pick(MetalSkin, anti_bullet)
+  then enemy_buys(SilenceGlyph)
+  why "Metal Skin — активный предмет: враг берёт Silence Glyph, чтобы сайленсить его активацию."
+
+rule ANS_TOXICBULLETS_FORTITUDE cf=0.92
+  if pick(ToxicBullets, anti_heal)
+  then enemy_buys(Fortitude)
+  why "Против нашего сокращения лечения враг берёт Fortitude с регенерацией — нужен Inhibitor."
+
+rule ANS_KNOCKDOWN_UNSTOPPABLE cf=0.92
+  if pick(Knockdown, anti_poke)
+  then enemy_buys(Unstoppable)
+  why "Unstoppable снимает наш Knockdown — отвечаем Curse, который отключает предметы."
+
+rule ANS_SLOWINGHEX_DEBUFFREMOVER cf=0.92
+  if pick(SlowingHex, anti_mobility)
+  then enemy_buys(DebuffRemover)
+  why "Debuff Remover снимает наше замедление — Curse не даёт применить очистку."
+
+rule ANS_ETHEREALSHIFT_CURSE cf=0.92
+  if pick(EtherealShift, anti_execute)
+  then enemy_buys(Curse)
+  why "Curse отключает Ethereal Shift — пассивный Diviner's Kevlar продолжает работать."
+
+rule ANS_THREAT_SILENCEGLYPH cf=0.93
+  if enemy_buys(SilenceGlyph)
+  then threat(item_silence)
+  why "SilenceGlyph в руках врага — новая угроза: item_silence."
+
+rule ANS_THREAT_FORTITUDE cf=0.93
+  if enemy_buys(Fortitude)
+  then threat(item_regen)
+  why "Fortitude в руках врага — новая угроза: item_regen."
+
+rule ANS_THREAT_UNSTOPPABLE cf=0.93
+  if enemy_buys(Unstoppable)
+  then threat(item_immunity)
+  why "Unstoppable в руках врага — новая угроза: item_immunity."
+
+rule ANS_THREAT_DEBUFFREMOVER cf=0.93
+  if enemy_buys(DebuffRemover)
+  then threat(item_purge)
+  why "DebuffRemover в руках врага — новая угроза: item_purge."
+
+rule ANS_THREAT_CURSE cf=0.93
+  if enemy_buys(Curse)
+  then threat(item_disable)
+  why "Curse в руках врага — новая угроза: item_disable."
+
+rule ANS_NEED_ITEM_SILENCE cf=0.90
+  if threat(item_silence)
+  then need(anti_silence)
+  why "Угроза item_silence закрывается потребностью anti_silence."
+
+rule ANS_NEED_ITEM_REGEN cf=0.90
+  if threat(item_regen)
+  then need(anti_regen)
+  why "Угроза item_regen закрывается потребностью anti_regen."
+
+rule ANS_NEED_ITEM_IMMUNITY cf=0.90
+  if threat(item_immunity)
+  then need(anti_immunity)
+  why "Угроза item_immunity закрывается потребностью anti_immunity."
+
+rule ANS_NEED_ITEM_PURGE cf=0.90
+  if threat(item_purge)
+  then need(anti_purge)
+  why "Угроза item_purge закрывается потребностью anti_purge."
+
+rule ANS_NEED_ITEM_DISABLE cf=0.90
+  if threat(item_disable)
+  then need(anti_disable)
+  why "Угроза item_disable закрывается потребностью anti_disable."
+
+rule SEC_UNSTOPPABLE_ANTI_SILENCE cf=0.95
+  if need(anti_silence) and hard_counter(Unstoppable, anti_silence)
+  then second_pick(Unstoppable, anti_silence)
+  why "Unstoppable — второй контр-предмет: закрывает anti_silence после ответа врага (SilenceGlyph)."
+
+rule SEC_INHIBITOR_ANTI_REGEN cf=0.95
+  if need(anti_regen) and hard_counter(Inhibitor, anti_regen)
+  then second_pick(Inhibitor, anti_regen)
+  why "Inhibitor — второй контр-предмет: закрывает anti_regen после ответа врага (Fortitude)."
+
+rule SEC_CURSE_ANTI_IMMUNITY cf=0.95
+  if need(anti_immunity) and hard_counter(Curse, anti_immunity)
+  then second_pick(Curse, anti_immunity)
+  why "Curse — второй контр-предмет: закрывает anti_immunity после ответа врага (Unstoppable)."
+
+rule SEC_CURSE_ANTI_PURGE cf=0.95
+  if need(anti_purge) and hard_counter(Curse, anti_purge)
+  then second_pick(Curse, anti_purge)
+  why "Curse — второй контр-предмет: закрывает anti_purge после ответа врага (DebuffRemover)."
+
+rule SEC_DIVINERSKEVLAR_ANTI_DISABLE cf=0.95
+  if need(anti_disable) and hard_counter(DivinersKevlar, anti_disable)
+  then second_pick(DivinersKevlar, anti_disable)
+  why "DivinersKevlar — второй контр-предмет: закрывает anti_disable после ответа врага (Curse)."
+
+# ============================================================================
+#  ПРАВИЛА: обратный запрос «выбранный предмет -> какие враги опасны»
+#  uncovered(предмет, герой, угроза): предмет не закрывает эту угрозу героя.
+# ============================================================================
+
+rule REV_AOE_CHANNEL cf=0.90
+  if our_item(?i)
+  and hero_tag(?h, aoe_channel)
+  and not item_provides(?i, anti_channel)
+  then uncovered(?i, ?h, aoe_channel)
+  why "aoe_channel: предмет не даёт ответа на потребность anti_channel — герой с такой угрозой остаётся опасным."
+
+rule REV_BULLET_DPS cf=0.90
+  if our_item(?i)
+  and hero_tag(?h, bullet_dps)
+  and not item_provides(?i, anti_bullet)
+  then uncovered(?i, ?h, bullet_dps)
+  why "bullet_dps: предмет не даёт ответа на потребность anti_bullet — герой с такой угрозой остаётся опасным."
+
+rule REV_BURST_MAGIC cf=0.90
+  if our_item(?i)
+  and hero_tag(?h, burst_magic)
+  and not item_provides(?i, anti_magic)
+  then uncovered(?i, ?h, burst_magic)
+  why "burst_magic: предмет не даёт ответа на потребность anti_magic — герой с такой угрозой остаётся опасным."
+
+rule REV_DIVE cf=0.90
+  if our_item(?i)
+  and hero_tag(?h, dive)
+  and not item_provides(?i, anti_dive)
+  then uncovered(?i, ?h, dive)
+  why "dive: предмет не даёт ответа на потребность anti_dive — герой с такой угрозой остаётся опасным."
+
+rule REV_DOT_PRESSURE cf=0.90
+  if our_item(?i)
+  and hero_tag(?h, dot_pressure)
+  and not item_provides(?i, anti_dot)
+  then uncovered(?i, ?h, dot_pressure)
+  why "dot_pressure: предмет не даёт ответа на потребность anti_dot — герой с такой угрозой остаётся опасным."
+
+rule REV_EXECUTE cf=0.90
+  if our_item(?i)
+  and hero_tag(?h, execute)
+  and not item_provides(?i, anti_execute)
+  then uncovered(?i, ?h, execute)
+  why "execute: предмет не даёт ответа на потребность anti_execute — герой с такой угрозой остаётся опасным."
+
+rule REV_HARD_CC cf=0.90
+  if our_item(?i)
+  and hero_tag(?h, hard_cc)
+  and not item_provides(?i, anti_cc)
+  then uncovered(?i, ?h, hard_cc)
+  why "hard_cc: предмет не даёт ответа на потребность anti_cc — герой с такой угрозой остаётся опасным."
+
+rule REV_INVISIBILITY cf=0.90
+  if our_item(?i)
+  and hero_tag(?h, invisibility)
+  and not item_provides(?i, anti_invis)
+  then uncovered(?i, ?h, invisibility)
+  why "invisibility: предмет не даёт ответа на потребность anti_invis — герой с такой угрозой остаётся опасным."
+
+rule REV_MOBILITY cf=0.90
+  if our_item(?i)
+  and hero_tag(?h, mobility)
+  and not item_provides(?i, anti_mobility)
+  then uncovered(?i, ?h, mobility)
+  why "mobility: предмет не даёт ответа на потребность anti_mobility — герой с такой угрозой остаётся опасным."
+
+rule REV_POKE cf=0.90
+  if our_item(?i)
+  and hero_tag(?h, poke)
+  and not item_provides(?i, anti_poke)
+  then uncovered(?i, ?h, poke)
+  why "poke: предмет не даёт ответа на потребность anti_poke — герой с такой угрозой остаётся опасным."
+
+rule REV_SUSTAIN cf=0.90
+  if our_item(?i)
+  and hero_tag(?h, sustain)
+  and not item_provides(?i, anti_heal)
+  then uncovered(?i, ?h, sustain)
+  why "sustain: предмет не даёт ответа на потребность anti_heal — герой с такой угрозой остаётся опасным."
+
+rule REV_TANK_FRONTLINE cf=0.90
+  if our_item(?i)
+  and hero_tag(?h, tank_frontline)
+  and not item_provides(?i, anti_tank)
+  then uncovered(?i, ?h, tank_frontline)
+  why "tank_frontline: предмет не даёт ответа на потребность anti_tank — герой с такой угрозой остаётся опасным."
+
+rule REV_ZONE_CONTROL cf=0.90
+  if our_item(?i)
+  and hero_tag(?h, zone_control)
+  and not item_provides(?i, anti_zone)
+  then uncovered(?i, ?h, zone_control)
+  why "zone_control: предмет не даёт ответа на потребность anti_zone — герой с такой угрозой остаётся опасным."
+
+# ============================================================================
+#  ЦЕЛИ. Входные данные (состав противника) задаются отдельно — файлами
+#  data/input/*.txt, в которых только строки fact enemy(...).
+# ============================================================================
+
+# все рекомендации: перебор по сортам item x need
+goal recommended(?i:item, ?n:need)
+
+# вторые контр-предметы (ответ на предмет, который возьмёт враг)
+goal second_pick(?i:item, ?n:need)

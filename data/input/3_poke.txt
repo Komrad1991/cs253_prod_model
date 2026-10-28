@@ -1,0 +1,8 @@
+# ============================================================================
+#  Входные данные: дальний бой и магия — Vindicta, Grey Talon, Bebop.
+#
+#  Запуск:  pmcli counter --kb data/deadlock_kb.txt --input data/input/3_poke.txt
+# ============================================================================
+fact enemy(Vindicta) cf=0.95
+fact enemy(GreyTalon) cf=0.90
+fact enemy(Bebop) cf=0.85

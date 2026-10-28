@@ -1,0 +1,11 @@
+# ============================================================================
+#  Входные данные: полный состав — шесть героев (максимум).
+#
+#  Запуск:  pmcli counter --kb data/deadlock_kb.txt --input data/input/6_full.txt
+# ============================================================================
+fact enemy(Haze) cf=0.95
+fact enemy(Seven) cf=0.90
+fact enemy(Abrams) cf=0.85
+fact enemy(Vindicta) cf=0.80
+fact enemy(MoKrill) cf=0.75
+fact enemy(Lash) cf=0.85

@@ -1,0 +1,38 @@
+# Мини-база для быстрой проверки движка (не входит в основную БЗ).
+kb "Мини-тест движка"
+description "Проверка: цепочка из 5 продукций, коэффициенты, цель с переменными."
+
+sort item = A, B
+sort need = n1
+
+fact enemy(X) cf=0.9
+fact item_provides(A, n1)
+fact item_slot(A, vitality)
+
+rule R1 cf=0.90
+  if enemy(X)
+  then threat(t1)
+  why "Противник X создаёт угрозу t1."
+
+rule R2 cf=0.80
+  if threat(t1)
+  then need(n1)
+  why "Угроза t1 требует потребности n1."
+
+rule R3 cf=0.95
+  if need(n1) and item_provides(A, n1)
+  then candidate(A, n1)
+  why "Предмет A закрывает потребность n1."
+
+rule R4 cf=0.90
+  if candidate(A, n1)
+  then pick(A, n1)
+  why "Кандидат A попадает в сборку."
+
+rule R5 cf=0.90
+  if pick(A, n1)
+  then recommended(A, n1)
+  why "Итоговая рекомендация."
+
+goal recommended(A, n1)
+goal pick(?i:item, ?n:need)

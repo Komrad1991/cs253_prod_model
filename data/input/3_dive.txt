@@ -1,0 +1,8 @@
+# ============================================================================
+#  Входные данные: заход в тыл — Lash, Shiv, Abrams.
+#
+#  Запуск:  pmcli counter --kb data/deadlock_kb.txt --input data/input/3_dive.txt
+# ============================================================================
+fact enemy(Lash) cf=0.95
+fact enemy(Shiv) cf=0.90
+fact enemy(Abrams) cf=0.90

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json.schemastore.org/launchsettings.json",
+  "profiles": {
+    "App": {
+      "commandName": "Project"
+    },
+    "App (1 hero)": {
+      "commandName": "Project",
+      "commandLineArgs": "--input data\\input\\1_haze.txt"
+    },
+    "App (6 heroes)": {
+      "commandName": "Project",
+      "commandLineArgs": "--input data\\input\\6_full.txt"
+    },
+    "App (forward)": {
+      "commandName": "Project",
+      "commandLineArgs": "--forward"
+    },
+    "App (backward)": {
+      "commandName": "Project",
+      "commandLineArgs": "--backward"
+    },
+    "App (cycles)": {
+      "commandName": "Project",
+      "commandLineArgs": "--kb data\\demo_cycles.txt --backward"
+    }
+  }
+}
