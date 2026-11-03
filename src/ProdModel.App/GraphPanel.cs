@@ -40,6 +40,8 @@ internal enum GraphState
 /// <summary>
 /// Панель визуализации дерева вывода: узлы-факты, рёбра-обоснования, отвергнутые
 /// ветви (циклы) в виде красных чипов с подсказкой при наведении.
+/// Поддерживает зум колесом мыши (от курсора) и панорамирование перетаскиванием;
+/// двойной клик по пустому месту сбрасывает вид.
 /// </summary>
 internal sealed class GraphPanel : Control
 {
@@ -52,12 +54,26 @@ internal sealed class GraphPanel : Control
     private const int ChipGapY = 8;
     private const int ChipOffsetX = 26;
 
+    private const float MinZoom = 0.15f;
+    private const float MaxZoom = 50f;      // было 6f — на широких деревьях упор в fit
+    private const float ZoomStep = 1.25f;   // было 1.15f — быстрее набирается
+    private const int DragThreshold = 4;
+
     private GraphNode? _root;
     private readonly List<(GraphNode Parent, GraphNode Child, bool IsOr)> _edges = new();
     private int _visible = int.MaxValue;
-    private int _scrollY;
     private int _contentWidth;
     private int _contentHeight;
+
+    // Вид: зум и панорама поверх «fit to panel».
+    private float _zoom = 1f;
+    private PointF _pan = PointF.Empty;
+
+    // Состояние перетаскивания.
+    private bool _isPanning;
+    private bool _didPan;
+    private Point _panStart;
+    private PointF _panAtStart;
 
     private GraphNode? _hoverNode;
     private Point _hoverPoint;
@@ -113,7 +129,7 @@ internal sealed class GraphPanel : Control
     {
         _root = root;
         _visible = int.MaxValue;
-        _scrollY = 0;
+        ResetView();
         Relayout();
         Invalidate();
     }
@@ -122,7 +138,7 @@ internal sealed class GraphPanel : Control
     {
         _root = root;
         _visible = visibleCount;
-        _scrollY = 0;
+        ResetView();
         Relayout();
         Invalidate();
     }
@@ -138,6 +154,14 @@ internal sealed class GraphPanel : Control
     /// <summary>Показывать отвергнутые ветви полным поддеревом (вместе с предотвращёнными циклами).</summary>
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public bool FullTree { get; set; }
+
+    private void ResetView()
+    {
+        _zoom = 1f;
+        _pan = PointF.Empty;
+        _isPanning = false;
+        _didPan = false;
+    }
 
     // ------------------------------------------------------------ раскладка ---
 
@@ -250,17 +274,33 @@ internal sealed class GraphPanel : Control
         }
     }
 
-    private (float Scale, float OffsetX, float OffsetY) Transform()
+    /// <summary>Базовый масштаб «вписать в панель» с учётом пользовательского зума.</summary>
+    private float FitScale()
     {
-        var scaleX = (Width - 32f) / Math.Max(1, _contentWidth);
-        var scaleY = (Height - 24f) / Math.Max(1, _contentHeight);
-        var scale = Math.Min(1f, Math.Min(scaleX, scaleY));
+        var fitScaleX = (Width - 32f) / Math.Max(1, _contentWidth);
+        var fitScaleY = (Height - 24f) / Math.Max(1, _contentHeight);
+        return Math.Min(1f, Math.Min(fitScaleX, fitScaleY)) * _zoom;
+    }
+
+    /// <summary>Смещение без пользовательской панорамы — используется как «якорь» для зума.</summary>
+    private (float Scale, float OffsetX, float OffsetY) TransformBase()
+    {
+        var scale = FitScale();
 
         var offsetX = (Width - _contentWidth * scale) / 2f;
         var scaledHeight = _contentHeight * scale;
-        var offsetY = scaledHeight <= Height - 16 ? (Height - scaledHeight) / 2f : 14 - _scrollY;
+        var offsetY = scaledHeight <= Height - 16
+            ? (Height - scaledHeight) / 2f
+            : 14f;
 
         return (scale, offsetX, offsetY);
+    }
+
+    /// <summary>Полное преобразование: базовое + пользовательская панорама.</summary>
+    private (float Scale, float OffsetX, float OffsetY) Transform()
+    {
+        var (scale, ox, oy) = TransformBase();
+        return (scale, ox + _pan.X, oy + _pan.Y);
     }
 
     // ------------------------------------------------------------ отрисовка ---
@@ -490,13 +530,54 @@ internal sealed class GraphPanel : Control
     protected override void OnMouseClick(MouseEventArgs e)
     {
         base.OnMouseClick(e);
+        if (_didPan) { _didPan = false; return; }
+
         var node = HitTest(e.Location);
         if (node is not null && !node.Rejected) NodeClicked?.Invoke(node);
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.Button != MouseButtons.Left) return;
+        if (_root is null) return;
+
+        _isPanning = true;
+        _didPan = false;
+        _panStart = e.Location;
+        _panAtStart = _pan;
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (e.Button != MouseButtons.Left) return;
+        _isPanning = false;
+        Cursor = _hoverNode is not null && !_didPan ? Cursors.Hand : Cursors.Default;
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+
+        if (_isPanning)
+        {
+            var dx = e.X - _panStart.X;
+            var dy = e.Y - _panStart.Y;
+            if (!_didPan && Math.Abs(dx) + Math.Abs(dy) > DragThreshold)
+            {
+                _didPan = true;
+                _hoverNode = null;
+            }
+
+            if (_didPan)
+            {
+                _pan = new PointF(_panAtStart.X + dx, _panAtStart.Y + dy);
+                if (Cursor != Cursors.SizeAll) Cursor = Cursors.SizeAll;
+                Invalidate();
+                return;
+            }
+        }
 
         var node = HitTest(e.Location);
         _hoverPoint = e.Location;
@@ -530,6 +611,49 @@ internal sealed class GraphPanel : Control
         Invalidate();
     }
 
+    /// <summary>Колесо — зум относительно курсора. Двойной клик по пустому месту — сброс вида.</summary>
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        base.OnMouseWheel(e);
+        if (_root is null) return;
+
+        var factor = e.Delta > 0 ? ZoomStep : 1f / ZoomStep;
+        var newZoom = Math.Clamp(_zoom * factor, MinZoom, MaxZoom);
+        if (Math.Abs(newZoom - _zoom) < 0.0001f) return;
+
+        // Содержимое под курсором до зума.
+        var (s1, ox1, oy1) = Transform();
+        var cx = (e.X - ox1) / s1;
+        var cy = (e.Y - oy1) / s1;
+
+        _zoom = newZoom;
+
+        // Смещение без панорамы при новом масштабе; подбираем pan так,
+        // чтобы (cx, cy) снова оказалось под курсором.
+        var (s2, bx2, by2) = TransformBase();
+        _pan = new PointF(
+            e.X - cx * s2 - bx2,
+            e.Y - cy * s2 - by2
+        );
+
+        Invalidate();
+    }
+
+    protected override void OnDoubleClick(EventArgs e)
+    {
+        base.OnDoubleClick(e);
+        if (_root is null) return;
+
+        // Реагируем только на пустое место, чтобы случайный двойной клик
+        // по узлу не сбрасывал вид.
+        var pt = PointToClient(MousePosition);
+        if (HitTest(pt) is not null) return;
+
+        _zoom = 1f;
+        _pan = PointF.Empty;
+        Invalidate();
+    }
+
     private GraphNode? HitTest(Point point)
     {
         if (_root is null) return null;
@@ -547,14 +671,6 @@ internal sealed class GraphPanel : Control
         }
 
         return found;
-    }
-
-    protected override void OnMouseWheel(MouseEventArgs e)
-    {
-        base.OnMouseWheel(e);
-        if (_contentHeight <= Height) return;
-        _scrollY = Math.Max(0, Math.Min(_contentHeight - Height + 20, _scrollY - e.Delta));
-        Invalidate();
     }
 
     protected override void OnResize(EventArgs e)

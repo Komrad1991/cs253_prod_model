@@ -34,17 +34,39 @@ public sealed class Firing
 public sealed class MatchResult
 {
     public Dictionary<string, string> Bindings { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Только положительные посылки (для расчёта cf).</summary>
     public List<Fact> Premises { get; init; } = new();
+
+    /// <summary>Индекс следующего обрабатываемого условия правила.
+    /// Не совпадает с Premises.Count, если в правиле есть отрицания.</summary>
+    public int ConditionIndex { get; init; }
 }
 
 /// <summary>
 /// Сопоставление посылок правила с рабочей памятью (соединение по всем условиям).
-/// Реализовано итеративно, явным стеком — без рекурсии.
+/// Итеративно, явным стеком — без рекурсии.
+///
+/// Ограничения по <paramref name="maxMatches"/> и <paramref name="cancellation"/>
+/// защищают от комбинаторного взрыва: перебор прерывается, а не «висит».
+///
+/// Индекс обрабатываемого условия ведётся отдельно (<see cref="MatchResult.ConditionIndex"/>),
+/// потому что отрицательный литерал не добавляет факт в посылки, но должен
+/// продвигать обход вперёд — иначе матчер зацикливается на нём.
 /// </summary>
 public static class Matcher
 {
-    public static List<MatchResult> Match(IReadOnlyList<Condition> conditions, Func<string, IReadOnlyList<Fact>> lookup)
+    /// <summary>Значение по умолчанию для maxMatches (защита от взрыва).</summary>
+    public const int DefaultMaxMatches = 5000;
+
+    public static List<MatchResult> Match(
+        IReadOnlyList<Condition> conditions,
+        Func<string, IReadOnlyList<Fact>> lookup,
+        out bool truncated,
+        int maxMatches = DefaultMaxMatches,
+        CancellationToken cancellation = default)
     {
+        truncated = false;
         var results = new List<MatchResult>();
         if (conditions.Count == 0)
         {
@@ -53,15 +75,20 @@ public static class Matcher
         }
 
         var stack = new Stack<MatchResult>();
-        stack.Push(new MatchResult());
+        stack.Push(new MatchResult { ConditionIndex = 0 });
+        var pushed = 1;
 
         while (stack.Count > 0)
         {
+            if (cancellation.IsCancellationRequested) { truncated = true; break; }
+
             var partial = stack.Pop();
-            var index = partial.Premises.Count;
-            if (index == conditions.Count)
+            var index = partial.ConditionIndex;
+
+            if (index >= conditions.Count)
             {
                 results.Add(partial);
+                if (results.Count >= maxMatches) { truncated = true; break; }
                 continue;
             }
 
@@ -70,36 +97,76 @@ public static class Matcher
             {
                 if (!AnyMatch(condition.Pattern, partial.Bindings, lookup))
                 {
+                    if (pushed >= maxMatches) { truncated = true; break; }
+                    // посылки не меняются, но индекс продвигается
                     stack.Push(new MatchResult
                     {
                         Bindings = new Dictionary<string, string>(partial.Bindings, StringComparer.OrdinalIgnoreCase),
-                        Premises = new List<Fact>(partial.Premises)
+                        Premises = new List<Fact>(partial.Premises),
+                        ConditionIndex = index + 1
                     });
+                    pushed++;
                 }
                 continue;
             }
 
             foreach (var fact in lookup(condition.Pattern.Name))
             {
+                if (cancellation.IsCancellationRequested) { truncated = true; break; }
+                if (pushed >= maxMatches) { truncated = true; break; }
+
                 var bindings = new Dictionary<string, string>(partial.Bindings, StringComparer.OrdinalIgnoreCase);
                 if (!condition.Pattern.TryMatch(fact.Atom, bindings)) continue;
 
                 var premises = new List<Fact>(partial.Premises) { fact };
-                stack.Push(new MatchResult { Bindings = bindings, Premises = premises });
+                stack.Push(new MatchResult
+                {
+                    Bindings = bindings,
+                    Premises = premises,
+                    ConditionIndex = index + 1
+                });
+                pushed++;
             }
+            if (truncated) break;
         }
 
         return results;
     }
 
+    /// <summary>Проверка отрицания без аллокации словаря на каждый факт.</summary>
     private static bool AnyMatch(Predicate pattern, IReadOnlyDictionary<string, string> bindings, Func<string, IReadOnlyList<Fact>> lookup)
     {
         foreach (var fact in lookup(pattern.Name))
         {
-            var probe = new Dictionary<string, string>(bindings, StringComparer.OrdinalIgnoreCase);
-            if (pattern.TryMatch(fact.Atom, probe)) return true;
+            if (MatchesReadonly(pattern, fact.Atom, bindings)) return true;
         }
         return false;
+    }
+
+    private static bool MatchesReadonly(Predicate pattern, Predicate atom, IReadOnlyDictionary<string, string> bindings)
+    {
+        if (pattern.Arity != atom.Arity) return false;
+        if (!string.Equals(pattern.Name, atom.Name, StringComparison.OrdinalIgnoreCase)) return false;
+
+        var args = pattern.Args;
+        var atomArgs = atom.Args;
+        for (var i = 0; i < args.Count; i++)
+        {
+            var p = args[i];
+            var a = atomArgs[i];
+            if (p.IsVariable)
+            {
+                if (bindings.TryGetValue(p.Name, out var bound))
+                {
+                    if (!string.Equals(bound, a.Name, StringComparison.OrdinalIgnoreCase)) return false;
+                }
+            }
+            else if (!string.Equals(p.Name, a.Name, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 }
 
@@ -107,14 +174,12 @@ public static class Matcher
 
 public sealed class ForwardOptions
 {
-    /// <summary>Защита от зацикливания на уровне проходов.</summary>
     public int MaxPasses { get; init; } = 200;
-
-    /// <summary>Защита от комбинаторного взрыва.</summary>
     public int MaxFacts { get; init; } = 50_000;
-
-    /// <summary>Порог уверенности, ниже которого факт не записывается.</summary>
+    public int MaxMatches { get; init; } = Matcher.DefaultMaxMatches;
     public double Threshold { get; init; } = Certainty.DefaultThreshold;
+    public CancellationToken Cancellation { get; init; }
+    public long MaxElapsedMs { get; init; }
 }
 
 public sealed class ForwardResult
@@ -125,9 +190,10 @@ public sealed class ForwardResult
     public int Layers { get; set; }
     public int BlockedRepeats { get; set; }
 
-    /// <summary>Сколько раз обоснование опиралось на сам выводимый факт (циклическая поддержка).</summary>
-    public int CircularSupports { get; set; }
+    /// <summary>Сколько правил/подстановок пришлось отбросить из-за maxMatches.</summary>
+    public int MatchTruncations { get; set; }
 
+    public int CircularSupports { get; set; }
     public bool LimitReached { get; set; }
     public long ElapsedMs { get; set; }
 
@@ -138,13 +204,7 @@ public sealed class ForwardResult
 }
 
 /// <summary>
-/// Прямой вывод (data-driven): от фактов к заключениям, проход за проходом,
-/// пока не будет достигнута неподвижная точка.
-///
-/// Защита от циклов:
-///  * каждая конкретная подстановка правила (правило + привязка переменных) срабатывает не более одного раза;
-///  * число проходов ограничено;
-///  * размер рабочей памяти ограничен.
+/// Прямой вывод (data-driven) с semi-naive-подходом.
 /// </summary>
 public sealed class ForwardChainer
 {
@@ -165,16 +225,58 @@ public sealed class ForwardChainer
         var blocked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var step = 0;
 
+        var rulesByPredicate = new Dictionary<string, HashSet<Rule>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rule in kb.Rules)
+        {
+            foreach (var cond in rule.Conditions)
+            {
+                if (!rulesByPredicate.TryGetValue(cond.Pattern.Name, out var set))
+                    rulesByPredicate[cond.Pattern.Name] = set = new HashSet<Rule>();
+                set.Add(rule);
+            }
+        }
+
+        var affected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var f in kb.Facts) affected.Add(f.Atom.Name);
+
         for (var pass = 1; pass <= opt.MaxPasses; pass++)
         {
+            if (opt.Cancellation.IsCancellationRequested) break;
+            if (opt.MaxElapsedMs > 0 && sw.ElapsedMilliseconds > opt.MaxElapsedMs) break;
+
             result.Passes = pass;
             var changed = false;
+            var nextAffected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var rule in kb.Rules)
+            var rulesToProcess = new HashSet<Rule>();
+            foreach (var pred in affected)
             {
-                var matches = Matcher.Match(rule.Conditions, memory.For);
+                if (rulesByPredicate.TryGetValue(pred, out var rs)) rulesToProcess.UnionWith(rs);
+            }
+
+            foreach (var rule in rulesToProcess)
+            {
+                if (opt.Cancellation.IsCancellationRequested) break;
+                if (opt.MaxElapsedMs > 0 && sw.ElapsedMilliseconds > opt.MaxElapsedMs) break;
+
+                var matches = Matcher.Match(
+                    rule.Conditions,
+                    memory.For,
+                    out var truncated,
+                    opt.MaxMatches,
+                    opt.Cancellation);
+                if (truncated) result.MatchTruncations++;
+
                 foreach (var match in matches)
                 {
+                    if (opt.Cancellation.IsCancellationRequested) break;
+
+                    var premiseCf = 1.0;
+                    foreach (var p in match.Premises) if (p.Cf < premiseCf) premiseCf = p.Cf;
+
+                    var cf = Certainty.RuleConclusion(rule.Cf, premiseCf);
+                    if (cf < opt.Threshold) continue;
+
                     var instanceKey = rule.Id + "|" + Canonical(match.Bindings);
                     if (!fired.Add(instanceKey))
                     {
@@ -182,12 +284,9 @@ public sealed class ForwardChainer
                         continue;
                     }
 
-                    var premiseCf = Certainty.MinCf(match.Premises.Select(p => p.Cf));
-                    var premiseDepth = match.Premises.Count == 0 ? 0 : match.Premises.Max(p => p.Depth);
-                    var cf = Certainty.RuleConclusion(rule.Cf, premiseCf);
+                    var premiseDepth = 0;
+                    foreach (var p in match.Premises) if (p.Depth > premiseDepth) premiseDepth = p.Depth;
                     var layer = premiseDepth + 1;
-
-                    if (cf < opt.Threshold) continue;
 
                     var conclusions = new List<Fact>();
                     foreach (var head in rule.Conclusions)
@@ -200,15 +299,12 @@ public sealed class ForwardChainer
                         {
                             var created = memory.AddDerived(atom, cf, layer, rule, match.Premises, step + 1);
                             conclusions.Add(created);
+                            nextAffected.Add(atom.Name);
                             changed = true;
                         }
                         else
                         {
                             conclusions.Add(existing);
-
-                            // Циклическая поддержка: факт опирается на самого себя.
-                            // Такую цепочку не учитываем в уверенности, иначе цикл
-                            // искусственно «подтверждал» бы сам себя.
                             var circular = DependsOn(atom, match.Premises);
 
                             existing.Derivations.Add(new Derivation
@@ -226,29 +322,35 @@ public sealed class ForwardChainer
                             {
                                 result.CircularSupports++;
                             }
+                            else if (existing.IsDerived)
+                            {
+                                var before = existing.Cf;
+                                existing.Cf = Certainty.Combine(existing.Cf, cf);
+                                existing.Depth = Math.Min(existing.Depth, layer);
+                                if (existing.Cf - before > 1e-9)
+                                {
+                                    changed = true;
+                                    nextAffected.Add(existing.Atom.Name);
+                                }
+                            }
                             else
                             {
-                                if (existing.IsDerived)
+                                var before = existing.Cf;
+                                existing.Cf = Math.Max(existing.Cf, cf);
+                                if (existing.Cf - before > 1e-9)
                                 {
-                                    var before = existing.Cf;
-                                    existing.Cf = Certainty.Combine(existing.Cf, cf);
-                                    existing.Depth = Math.Min(existing.Depth, layer);
-                                    if (existing.Cf - before > 1e-9) changed = true;
+                                    changed = true;
+                                    nextAffected.Add(existing.Atom.Name);
                                 }
-                                else
-                                {
-                                    // входной факт подтверждён правилом — уверенность не понижаем
-                                    existing.Cf = Math.Max(existing.Cf, cf);
-                                }
+                            }
 
-                                if (cf > existing.BestCf + 1e-9)
-                                {
-                                    existing.BestCf = cf;
-                                    existing.Rule = rule;
-                                    existing.RuleCf = rule.Cf;
-                                    existing.Premises.Clear();
-                                    existing.Premises.AddRange(match.Premises);
-                                }
+                            if (cf > existing.BestCf + 1e-9)
+                            {
+                                existing.BestCf = cf;
+                                existing.Rule = rule;
+                                existing.RuleCf = rule.Cf;
+                                existing.Premises.Clear();
+                                existing.Premises.AddRange(match.Premises);
                             }
                         }
                     }
@@ -279,7 +381,8 @@ public sealed class ForwardChainer
                 if (result.LimitReached) break;
             }
 
-            if (result.LimitReached || !changed) break;
+            affected = nextAffected;
+            if (result.LimitReached || !changed || nextAffected.Count == 0) break;
         }
 
         result.BlockedRepeats = blocked.Count;
@@ -295,7 +398,6 @@ public sealed class ForwardChainer
             .Select(kv => kv.Key.ToLowerInvariant() + "=" + kv.Value.ToLowerInvariant()));
     }
 
-    /// <summary>Проверяет, опирается ли вывод атома на сам этот атом (идя по посылкам).</summary>
     private static bool DependsOn(Predicate atom, IReadOnlyList<Fact> premises)
     {
         if (premises.Count == 0) return false;
@@ -346,17 +448,11 @@ public sealed class SearchNode
     public SearchState State { get; set; } = SearchState.Pending;
     public double Cf { get; set; }
 
-    /// <summary>Если цель доказана фактом рабочей памяти.</summary>
     public Fact? Fact { get; set; }
-
     public string Note { get; set; } = string.Empty;
-
-    /// <summary>Ветвь оборвана ограничением (глубина/лимит узлов), а не логикой.</summary>
     public bool Truncated { get; set; }
 
     public List<string> Rejected { get; } = new();
-
-    /// <summary>Отвергнутые попытки применить правило — с сохранением поддерева (для визуализации).</summary>
     public List<RejectedAttempt> RejectedAttempts { get; } = new();
 
     public bool Proven => State == SearchState.Proven;
@@ -370,7 +466,6 @@ public sealed class SearchNode
     public override string ToString() => $"[{Id}] {Label} — {State} cf={Certainty.Format(Cf)}";
 }
 
-/// <summary>Попытка применить правило, которая не подтвердилась: правило, подстановка, поддерево и причина.</summary>
 public sealed class RejectedAttempt
 {
     public required Rule Rule { get; init; }
@@ -381,14 +476,12 @@ public sealed class RejectedAttempt
 
 public sealed class BackwardOptions
 {
-    /// <summary>Максимальная глубина цепочки (защита от зацикливания и бесконечного поиска).</summary>
-    public int MaxDepth { get; init; } = 14;
-
-    /// <summary>Максимальное число узлов дерева поиска.</summary>
-    public int MaxNodes { get; init; } = 30_000;
-
-    /// <summary>Использовать кэш доказанных подцелей.</summary>
+    public int MaxDepth { get; init; } = 20;
+    public int MaxNodes { get; init; } = 40_000;
     public bool UseMemo { get; init; } = true;
+    public bool ReuseMemo { get; init; }
+    public int MaxGoalInstances { get; init; } = 4000;
+    public CancellationToken Cancellation { get; init; }
 }
 
 public sealed class BackwardResult
@@ -406,34 +499,31 @@ public sealed class BackwardResult
     public bool LimitReached { get; set; }
     public long ElapsedMs { get; set; }
 
-    /// <summary>Узлы успешного доказательства в «нормальном порядке»: посылки раньше заключения.</summary>
     public List<SearchNode> Steps { get; } = new();
+    public List<SearchNode> CycleNodes { get; } = new();
 
     public int Layers { get; set; }
+
+    public bool FailedDueToCycle => !Proven && CycleHits > 0;
 
     public string FailureReason => Root.State switch
     {
         SearchState.Proven => string.Empty,
-        SearchState.Cyclic => "доказательство упирается в цикл",
+        SearchState.Cyclic => CycleHits > 0
+            ? $"доказательство упирается в цикл ({CycleHits} шт.)"
+            : "доказательство упирается в цикл",
         SearchState.DepthLimit => "превышена предельная глубина",
         SearchState.Failed => Root.Note,
         _ => "поиск не завершён"
     };
 }
 
-/// <summary>
-/// Обратный вывод (goal-driven) над деревом поиска, реализованный итеративно
-/// (явный стек кадров, без рекурсии).
-///
-/// Схема: цель → правила, в заключении которых есть эта цель (унификация) →
-/// подцели из посылок → в глубину, с возвратом при неудаче.
-/// Каждая подцель обязана быть конкретной (все переменные связаны унификацией
-/// с заключением) — это гарантируется проверкой безопасности правил.
-/// </summary>
 public sealed class BackwardEngine
 {
     private readonly Dictionary<string, double> _memo = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _failedMemo = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<SearchNode> _nodes = new();
+    private readonly Dictionary<SearchNode, NodeState> _state = new();
     private BackwardOptions _options = new();
     private WorkingMemory _facts = null!;
     private KnowledgeBase _kb = null!;
@@ -445,157 +535,18 @@ public sealed class BackwardEngine
         _kb = kb;
         _facts = facts;
         _options = options ?? new BackwardOptions();
-        _memo.Clear();
+        if (!_options.ReuseMemo) { _memo.Clear(); _failedMemo.Clear(); }
         _nodes.Clear();
+        _state.Clear();
         _aborted = false;
 
         var root = new SearchNode { Id = 0, Goal = goal, Depth = 0 };
         _nodes.Add(root);
-
-        var stack = new Stack<Frame>();
-        stack.Push(new Frame(root));
+        _state[root] = new NodeState();
 
         var result = new BackwardResult { Goal = goal, Root = root };
 
-        while (stack.Count > 0)
-        {
-            if (_aborted)
-            {
-                foreach (var pending in stack)
-                {
-                    if (pending.Node.State == SearchState.Pending)
-                    {
-                        pending.Node.State = SearchState.Failed;
-                        pending.Node.Note = "поиск прерван по лимиту узлов";
-                        pending.Node.Truncated = true;
-                    }
-                }
-                stack.Clear();
-                break;
-            }
-
-            var frame = stack.Peek();
-            var node = frame.Node;
-
-            if (!frame.Initialized)
-            {
-                frame.Initialized = true;
-
-                if (node.Depth > _options.MaxDepth)
-                {
-                    result.DepthLimited++;
-                    Complete(stack, frame, SearchState.DepthLimit, 0, $"глубина больше {_options.MaxDepth}", truncated: true);
-                    continue;
-                }
-
-                var ancestor = FindAncestor(node);
-                if (ancestor is not null)
-                {
-                    result.CycleHits++;
-                    Complete(stack, frame, SearchState.Cyclic, 0, $"цикл: уже доказываем {ancestor.Goal}", truncated: true);
-                    continue;
-                }
-
-                var fact = _facts.Find(node.Goal);
-                if (fact is not null)
-                {
-                    if (node.Negated)
-                    {
-                        Complete(stack, frame, SearchState.Failed, 0, "факт присутствует — отрицание ложно");
-                    }
-                    else
-                    {
-                        node.Fact = fact;
-                        Complete(stack, frame, SearchState.Proven, fact.Cf, string.Empty, truncated: false, memoizable: true);
-                    }
-                    continue;
-                }
-
-                if (node.Negated && _kb.RulesFor(node.Goal.Name).Count == 0)
-                {
-                    Complete(stack, frame, SearchState.Proven, 1.0, "факта нет и правил нет — отрицание истинно");
-                    continue;
-                }
-
-                if (!node.Negated && _options.UseMemo && _memo.TryGetValue(node.Goal.Key, out var cached))
-                {
-                    result.MemoHits++;
-                    Complete(stack, frame, SearchState.Proven, cached, "цель доказана ранее", truncated: false);
-                    continue;
-                }
-
-                frame.Candidates = Candidates(node.Goal);
-                if (frame.Candidates.Count == 0)
-                {
-                    Complete(stack, frame, SearchState.Failed, 0, "нет продукций с таким заключением");
-                    continue;
-                }
-
-                frame.RuleIndex = 0;
-                if (!OpenRule(stack, frame))
-                {
-                    Complete(stack, frame, SearchState.Failed, 0, "правила небезопасны: переменные не связываются с целью");
-                    continue;
-                }
-
-                continue;
-            }
-
-            if (frame.ChildIndex < node.Children.Count)
-            {
-                var child = node.Children[frame.ChildIndex];
-                if (child.State == SearchState.Pending)
-                {
-                    stack.Push(new Frame(child));
-                    continue;
-                }
-                frame.ChildIndex++;
-                continue;
-            }
-
-            var allProven = true;
-            foreach (var child in node.Children)
-            {
-                if (!child.Proven)
-                {
-                    allProven = false;
-                    break;
-                }
-            }
-
-            if (allProven && node.Rule is not null && node.Children.All(c => !c.Truncated))
-            {
-                var premiseCf = Certainty.MinCf(node.Children.Select(c => c.Cf));
-                var cf = Certainty.RuleConclusion(node.Rule.Cf, premiseCf);
-                Complete(stack, frame, SearchState.Proven, cf, string.Empty, truncated: false, memoizable: !node.Negated);
-                continue;
-            }
-
-            // правило не сработало — пробуем следующее
-            if (node.Rule is not null)
-            {
-                var failing = node.Children.FirstOrDefault(c => !c.Proven);
-                var reason = failing is not null && failing.Note.Length > 0
-                    ? failing.Note
-                    : "правило не подтвердилось";
-
-                var attempt = new RejectedAttempt
-                {
-                    Rule = node.Rule,
-                    Bindings = new Dictionary<string, string>(node.Bindings, StringComparer.OrdinalIgnoreCase),
-                    Reason = reason
-                };
-                attempt.Children.AddRange(node.Children);
-                node.RejectedAttempts.Add(attempt);
-
-                node.Rejected.Add($"{node.Rule.Id} — {reason}");
-            }
-
-            frame.RuleIndex++;
-            if (frame.RuleIndex < frame.Candidates.Count && OpenRule(stack, frame)) continue;
-
-            Complete(stack, frame, SearchState.Failed, 0, "все продукции испробованы");
-        }
+        Run(root, result);
 
         result.NodesVisited = _nodes.Count;
         result.LimitReached = _aborted;
@@ -604,6 +555,299 @@ public sealed class BackwardEngine
         sw.Stop();
         result.ElapsedMs = sw.ElapsedMilliseconds;
         return result;
+    }
+
+    private void Run(SearchNode root, BackwardResult result)
+    {
+        var current = root;
+
+        while (current is not null)
+        {
+            if (_aborted) break;
+            if (_options.Cancellation.IsCancellationRequested) { _aborted = true; break; }
+
+            var state = _state[current];
+
+            if (!state.Started)
+            {
+                state.Started = true;
+
+                if (TryResolveImmediately(current, result))
+                {
+                    current = current.Parent;
+                    continue;
+                }
+
+                state.Candidates = Candidates(current.Goal);
+                if (state.Candidates.Count == 0)
+                {
+                    Finalize(current, SearchState.Failed, 0, "нет продукций с таким заключением");
+                    current = current.Parent;
+                    continue;
+                }
+
+                state.RuleIndex = 0;
+                if (!OpenRule(current, state))
+                {
+                    Finalize(current, SearchState.Failed, 0,
+                        _aborted ? "поиск прерван по лимиту/отмене"
+                                 : "правила небезопасны: переменные не связываются с целью",
+                        truncated: _aborted);
+                    current = current.Parent;
+                    continue;
+                }
+
+                if (current.Children.Count == 0)
+                {
+                    var ruleCf = state.Candidates[state.RuleIndex].Rule.Cf;
+                    Finalize(current, SearchState.Proven, Certainty.RuleConclusion(ruleCf, 1.0),
+                        string.Empty, memoizable: !current.Negated);
+                    current = current.Parent;
+                    continue;
+                }
+
+                state.ChildIndex = 0;
+                current = current.Children[0];
+                continue;
+            }
+
+            if (state.ChildIndex + 1 < current.Children.Count)
+            {
+                state.ChildIndex++;
+                current = current.Children[state.ChildIndex];
+                continue;
+            }
+
+            if (current.Children.All(c => c.Proven) && current.Children.All(c => !c.Truncated))
+            {
+                var premiseCf = Certainty.MinCf(current.Children.Select(c => c.Cf));
+                var ruleCf = state.Candidates[state.RuleIndex].Rule.Cf;
+                var cf = Certainty.RuleConclusion(ruleCf, premiseCf);
+                Finalize(current, SearchState.Proven, cf, string.Empty, memoizable: !current.Negated);
+                current = current.Parent;
+                continue;
+            }
+
+            RecordRejected(current);
+
+            state.RuleIndex++;
+            if (OpenRule(current, state))
+            {
+                if (current.Children.Count == 0)
+                {
+                    var ruleCf2 = state.Candidates[state.RuleIndex].Rule.Cf;
+                    Finalize(current, SearchState.Proven, Certainty.RuleConclusion(ruleCf2, 1.0),
+                        string.Empty, memoizable: !current.Negated);
+                    current = current.Parent;
+                    continue;
+                }
+
+                state.ChildIndex = 0;
+                current = current.Children[0];
+                continue;
+            }
+
+            Finalize(current, SearchState.Failed, 0,
+                _aborted ? "поиск прерван по лимиту/отмене" : "все продукции испробованы",
+                truncated: _aborted);
+            current = current.Parent;
+        }
+
+        if (_aborted)
+        {
+            MarkPendingAsFailed();
+        }
+        else if (root.State == SearchState.Failed && result.CycleHits > 0)
+        {
+            root.State = SearchState.Cyclic;
+            root.Note = $"не доказано; в дереве {result.CycleHits} цикл(ов)";
+        }
+    }
+
+    private bool TryResolveImmediately(SearchNode node, BackwardResult result)
+    {
+        if (node.Depth > _options.MaxDepth)
+        {
+            result.DepthLimited++;
+            Finalize(node, SearchState.DepthLimit, 0,
+                $"глубина больше {_options.MaxDepth}", truncated: true);
+            return true;
+        }
+
+        var ancestor = FindAncestor(node);
+        if (ancestor is not null)
+        {
+            result.CycleHits++;
+            result.CycleNodes.Add(node);
+            Finalize(node, SearchState.Cyclic, 0,
+                $"цикл: уже доказываем {ancestor.Goal}", truncated: true);
+            return true;
+        }
+
+        var fact = _facts.Find(node.Goal);
+        if (fact is not null)
+        {
+            if (node.Negated)
+                Finalize(node, SearchState.Failed, 0, "факт присутствует — отрицание ложно");
+            else
+            {
+                node.Fact = fact;
+                Finalize(node, SearchState.Proven, fact.Cf, string.Empty, memoizable: true);
+            }
+            return true;
+        }
+
+        if (node.Negated && _kb.RulesFor(node.Goal.Name).Count == 0)
+        {
+            Finalize(node, SearchState.Proven, 1.0, "факта нет и правил нет — отрицание истинно");
+            return true;
+        }
+
+        if (_options.UseMemo)
+        {
+            var key = MemoKey(node);
+
+            if (!node.Negated && _memo.TryGetValue(node.Goal.Key, out var cached))
+            {
+                result.MemoHits++;
+                Finalize(node, SearchState.Proven, cached, "цель доказана ранее");
+                return true;
+            }
+
+            if (_failedMemo.Contains(key))
+            {
+                result.MemoHits++;
+                Finalize(node, SearchState.Failed, 0, "цель уже опровергнута ранее");
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool OpenRule(SearchNode node, NodeState state)
+    {
+        while (state.RuleIndex < state.Candidates.Count)
+        {
+            if (_aborted || _options.Cancellation.IsCancellationRequested) { _aborted = true; return false; }
+
+            var (rule, bindings) = state.Candidates[state.RuleIndex];
+
+            var children = TryBuildChildren(node, rule, bindings);
+            if (children is null) { state.RuleIndex++; continue; }
+
+            node.Children.Clear();          // только когда реально строим новый набор
+            node.Rule = rule;
+            node.Bindings = bindings;
+            node.Children.AddRange(children);
+            state.Expanded = true;
+            return true;
+        }
+        return false;
+    }
+
+    private List<SearchNode>? TryBuildChildren(SearchNode node, Rule rule, Dictionary<string, string> bindings)
+    {
+        var children = new List<SearchNode>(rule.Conditions.Count);
+
+        foreach (var condition in rule.Conditions)
+        {
+            if (_options.Cancellation.IsCancellationRequested) { _aborted = true; return null; }
+
+            var atom = condition.Pattern.Substitute(bindings);
+            if (!atom.IsGround) return null;
+
+            if (_nodes.Count >= _options.MaxNodes)
+            {
+                _aborted = true;
+                return null;
+            }
+
+            var child = new SearchNode
+            {
+                Id = _nodes.Count,
+                Goal = atom,
+                Depth = node.Depth + 1,
+                Parent = node,
+                Negated = condition.Negated
+            };
+            _nodes.Add(child);
+            _state[child] = new NodeState();
+            children.Add(child);
+        }
+
+        return children;
+    }
+
+    private static void RecordRejected(SearchNode node)
+    {
+        if (node.Rule is null) return;
+
+        var failing = node.Children.FirstOrDefault(c => !c.Proven);
+        var reason = failing is not null && failing.Note.Length > 0
+            ? failing.Note
+            : "правило не подтвердилось";
+
+        var attempt = new RejectedAttempt
+        {
+            Rule = node.Rule,
+            Bindings = new Dictionary<string, string>(node.Bindings, StringComparer.OrdinalIgnoreCase),
+            Reason = reason
+        };
+        attempt.Children.AddRange(node.Children);
+        node.RejectedAttempts.Add(attempt);
+        node.Rejected.Add($"{node.Rule.Id} — {reason}");
+    }
+
+    private void Finalize(SearchNode node, SearchState state, double cf, string note,
+                          bool truncated = false, bool memoizable = false)
+    {
+        if (node.Negated && _state[node].Expanded)
+        {
+            if (state == SearchState.Proven)
+            {
+                state = SearchState.Failed;
+                note = "отрицание ложно: " + note;
+                cf = 0;
+            }
+            else if (state == SearchState.Failed && !truncated)
+            {
+                state = SearchState.Proven;
+                note = "не выводится → отрицание истинно";
+                cf = 1.0;
+            }
+        }
+
+        node.State = state;
+        node.Cf = Certainty.Clamp(cf);
+        node.Note = note;
+        node.Truncated |= truncated;
+
+        if (_options.UseMemo)
+        {
+            if (memoizable && state == SearchState.Proven && !node.Negated)
+            {
+                var key = node.Goal.Key;
+                if (!_memo.TryGetValue(key, out var known) || cf > known) _memo[key] = node.Cf;
+            }
+            else if (!truncated && state == SearchState.Failed)
+            {
+                _failedMemo.Add(MemoKey(node));
+            }
+        }
+    }
+
+    private static string MemoKey(SearchNode node) => (node.Negated ? "!" : "") + node.Goal.Key;
+
+    private void MarkPendingAsFailed()
+    {
+        foreach (var node in _nodes)
+        {
+            if (node.State != SearchState.Pending) continue;
+            node.State = SearchState.Failed;
+            if (string.IsNullOrEmpty(node.Note)) node.Note = "поиск прерван по лимиту/отмене";
+            node.Truncated = true;
+        }
     }
 
     private static int MaxProvenDepth(SearchNode node)
@@ -623,7 +867,6 @@ public sealed class BackwardEngine
 
     private static void CollectSteps(SearchNode root, List<SearchNode> steps)
     {
-        // Пост-обход (посылки → заключение), только успешная ветвь.
         var stack = new Stack<(SearchNode Node, bool Processed)>();
         stack.Push((root, false));
         while (stack.Count > 0)
@@ -684,111 +927,18 @@ public sealed class BackwardEngine
             if (UnifyHead(rule, goal, out var bindings, out _)) list.Add((rule, bindings));
         }
 
-        // Сильные правила пробуем первыми: так доказательство получает более
-        // объяснимое обоснование (сначала специализированные контр-предметы,
-        // потом общие правила).
         return list
             .OrderByDescending(x => x.Rule.Cf)
             .ToList();
     }
 
-    private bool OpenRule(Stack<Frame> stack, Frame frame)
+    private sealed class NodeState
     {
-        var node = frame.Node;
-        var (rule, bindings) = frame.Candidates[frame.RuleIndex];
-        node.Rule = rule;
-        node.Bindings = bindings;
-        node.Children.Clear();
-        frame.ChildIndex = 0;
-
-        var children = new List<SearchNode>(rule.Conditions.Count);
-        foreach (var condition in rule.Conditions)
-        {
-            var atom = condition.Pattern.Substitute(bindings);
-            if (!atom.IsGround)
-            {
-                node.Children.Clear();
-                node.Note = $"правило {rule.Id} небезопасно: подцель {atom} содержит переменные";
-                return false;
-            }
-
-            if (_nodes.Count >= _options.MaxNodes)
-            {
-                _aborted = true;
-                node.Children.Clear();
-                return false;
-            }
-
-            var child = new SearchNode
-            {
-                Id = _nodes.Count,
-                Goal = atom,
-                Depth = node.Depth + 1,
-                Parent = node,
-                Negated = condition.Negated
-            };
-            _nodes.Add(child);
-            children.Add(child);
-        }
-
-        node.Children.AddRange(children);
-        frame.Expanded = true;
-        return true;
-    }
-
-    private void Complete(
-        Stack<Frame> stack,
-        Frame frame,
-        SearchState state,
-        double cf,
-        string note,
-        bool truncated = false,
-        bool memoizable = false)
-    {
-        var node = frame.Node;
-
-        // Отрицание: результат раскрытия правил инвертируется.
-        if (node.Negated && frame.Expanded)
-        {
-            if (state == SearchState.Proven)
-            {
-                state = SearchState.Failed;
-                note = "отрицание ложно: " + note;
-                cf = 0;
-            }
-            else if (state == SearchState.Failed && !truncated)
-            {
-                state = SearchState.Proven;
-                note = "не выводится → отрицание истинно";
-                cf = 1.0;
-            }
-        }
-
-        node.State = state;
-        node.Cf = Certainty.Clamp(cf);
-        node.Note = note;
-        node.Truncated |= truncated;
-
-        if (memoizable && state == SearchState.Proven && !node.Negated)
-        {
-            var key = node.Goal.Key;
-            if (!_memo.TryGetValue(key, out var known) || cf > known) _memo[key] = node.Cf;
-        }
-
-        stack.Pop();
-        if (stack.Count > 0) stack.Peek().ChildIndex++;
-    }
-
-    private sealed class Frame
-    {
-        public Frame(SearchNode node) => Node = node;
-
-        public SearchNode Node { get; }
-        public List<(Rule Rule, Dictionary<string, string> Bindings)> Candidates { get; set; } = new();
+        public bool Started { get; set; }
+        public bool Expanded { get; set; }
         public int RuleIndex { get; set; }
         public int ChildIndex { get; set; }
-        public bool Initialized { get; set; }
-        public bool Expanded { get; set; }
+        public List<(Rule Rule, Dictionary<string, string> Bindings)> Candidates { get; set; } = new();
     }
 }
 
@@ -799,14 +949,11 @@ public sealed class GoalSolutions
     public List<BackwardResult> Results { get; } = new();
 
     public IEnumerable<BackwardResult> Proven => Results.Where(r => r.Proven);
+    public IEnumerable<BackwardResult> FailedDueToCycle => Results.Where(r => r.FailedDueToCycle);
 }
 
-/// <summary>Обёртка над обратным выводом: перебор целей с переменными и запуск по всем целям файла.</summary>
 public static class BackwardSolver
 {
-    /// <summary>
-    /// Разворачивает цель с переменными в набор конкретных целей по объявленным сортам.
-    /// </summary>
     public static List<Predicate> EnumerateInstances(GoalDefinition goal, KnowledgeBase kb, int cap = 4000)
     {
         if (!goal.HasVariables) return new List<Predicate> { goal.Pattern };
@@ -850,7 +997,6 @@ public static class BackwardSolver
             }
             result.Add(new Predicate(goal.Pattern.Name, atoms));
 
-            // следующий индекс (декартово произведение)
             var carry = true;
             for (var k = 0; k < variablePositions.Count && carry; k++)
             {
@@ -878,15 +1024,30 @@ public static class BackwardSolver
         IEnumerable<GoalDefinition> goals,
         BackwardOptions? options = null)
     {
+        var opt = options ?? new BackwardOptions();
+
+        var batchOptions = new BackwardOptions
+        {
+            MaxDepth = opt.MaxDepth,
+            MaxNodes = opt.MaxNodes,
+            UseMemo = opt.UseMemo,
+            ReuseMemo = true,
+            MaxGoalInstances = opt.MaxGoalInstances,
+            Cancellation = opt.Cancellation
+        };
+
         var engine = new BackwardEngine();
         var results = new List<GoalSolutions>();
 
         foreach (var goal in goals)
         {
+            if (opt.Cancellation.IsCancellationRequested) break;
+
             var holder = new GoalSolutions { Goal = goal };
-            foreach (var instance in EnumerateInstances(goal, kb))
+            foreach (var instance in EnumerateInstances(goal, kb, opt.MaxGoalInstances))
             {
-                holder.Results.Add(engine.Solve(kb, facts, instance, options));
+                if (opt.Cancellation.IsCancellationRequested) break;
+                holder.Results.Add(engine.Solve(kb, facts, instance, batchOptions));
             }
             results.Add(holder);
         }

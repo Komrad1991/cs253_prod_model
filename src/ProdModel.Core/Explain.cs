@@ -95,12 +95,22 @@ public static class TextExplainer
         var sb = new StringBuilder();
         var status = result.Proven
             ? $"ЦЕЛЬ ДОКАЗАНА, cf={Certainty.Format(result.Cf)}"
-            : $"ЦЕЛЬ НЕ ДОКАЗАНА ({result.FailureReason})";
+            : result.FailedDueToCycle
+                ? $"ЦЕЛЬ НЕ ДОКАЗАНА — упёрлись в цикл ({result.CycleHits} шт.)"
+                : $"ЦЕЛЬ НЕ ДОКАЗАНА ({result.FailureReason})";
 
         sb.AppendLine($"Цель: {result.Goal}  →  {status}");
         sb.AppendLine($"Узлов: {result.NodesVisited}, слоёв: {result.Layers}, " +
                       $"циклов предотвращено: {result.CycleHits}, повторов из кэша: {result.MemoHits}, " +
                       $"время: {result.ElapsedMs} мс");
+
+        if (result.FailedDueToCycle && result.CycleNodes.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("ОБНАРУЖЕННЫЕ ЦИКЛЫ (поиск остановлен, бесконечный вывод предотвращён):");
+            foreach (var node in result.CycleNodes)
+                sb.AppendLine($"  ⟲ {node.Goal}  — {node.Note}");
+        }
 
         sb.AppendLine();
         sb.AppendLine(result.Proven
@@ -140,8 +150,8 @@ public static class TextExplainer
             {
                 SearchState.Proven => "✔",
                 SearchState.Failed => "✘",
-                SearchState.Cyclic => "⟲",
-                SearchState.DepthLimit => "…",
+                SearchState.Cyclic => "⟲ ЦИКЛ",
+                SearchState.DepthLimit => "… предел",
                 _ => "?"
             };
 

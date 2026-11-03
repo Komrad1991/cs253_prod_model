@@ -1,0 +1,82 @@
+kb "Deadlock: mini reverse inference + guaranteed cycle probe"
+description "Мини-база: обратный вывод uncovered + гарантированный цикл cycle_a<->cycle_b."
+
+# --- домены ---
+sort hero = Haze, Seven, MoKrill
+sort item = MetalSkin, BulletArmor, Curse, Unstoppable
+sort threat = bullet_dps, aoe_channel, hard_cc
+sort need = anti_bullet, anti_channel, anti_cc
+
+# --- герои ---
+fact hero(Haze)
+fact hero(Seven)
+fact hero(MoKrill)
+
+# --- профили героев: какие угрозы создают ---
+fact hero_tag(Haze, bullet_dps) cf=0.95
+fact hero_tag(Seven, aoe_channel) cf=0.95
+fact hero_tag(MoKrill, hard_cc) cf=0.95
+
+# --- предметы и что они закрывают ---
+fact item(MetalSkin)
+fact item(BulletArmor)
+fact item(Curse)
+fact item(Unstoppable)
+
+fact item_provides(MetalSkin, anti_channel)
+fact item_provides(BulletArmor, anti_bullet)
+fact item_provides(Curse, anti_channel)
+fact item_provides(Unstoppable, anti_cc)
+
+# --- наши выбранные предметы для обратного запроса ---
+fact our_item(MetalSkin)
+fact our_item(Curse)
+
+# ============================================================================
+# Обратный вывод: выбранный предмет -> какие угрозы героев им не закрыты
+# ============================================================================
+
+rule REV_BULLET_DPS cf=0.90
+  if our_item(?i)
+  and hero_tag(?h, bullet_dps)
+  and not item_provides(?i, anti_bullet)
+  then uncovered(?i, ?h, bullet_dps)
+  why "bullet_dps: предмет не даёт anti_bullet — герой остаётся опасным."
+
+rule REV_AOE_CHANNEL cf=0.90
+  if our_item(?i)
+  and hero_tag(?h, aoe_channel)
+  and not item_provides(?i, anti_channel)
+  then uncovered(?i, ?h, aoe_channel)
+  why "aoe_channel: предмет не даёт anti_channel — герой остаётся опасным."
+
+rule REV_HARD_CC cf=0.90
+  if our_item(?i)
+  and hero_tag(?h, hard_cc)
+  and not item_provides(?i, anti_cc)
+  then uncovered(?i, ?h, hard_cc)
+  why "hard_cc: предмет не даёт anti_cc — герой остаётся опасным."
+
+# ============================================================================
+# Гарантированный цикл для проверки обратного вывода.
+# goal cycle_a(?i) -> CYCLE_A -> cycle_b(?i) -> CYCLE_B -> cycle_a(?i)
+# Базового правила, закрывающего cycle_b, нет: цикл обязан сработать.
+# ============================================================================
+
+rule CYCLE_A cf=1.00
+  if item(?i)
+  and cycle_b(?i)
+  then cycle_a(?i)
+  why "cycle_a зависит от cycle_b; item(?i) только связывает переменную."
+
+rule CYCLE_B cf=1.00
+  if cycle_a(?i)
+  then cycle_b(?i)
+  why "cycle_b зависит от cycle_a — замыкает цикл."
+
+# ============================================================================
+# Цели
+# ============================================================================
+
+goal uncovered(?i:item, ?h:hero, ?t:threat)
+goal cycle_a(?i:item)
