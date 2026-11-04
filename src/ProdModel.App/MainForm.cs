@@ -47,6 +47,7 @@ internal sealed class MainForm : Form
     private readonly Button _btnFwdPlay = MakeButton("▶ Играть");
     private readonly Button _btnFwdStep = MakeButton("⏭ Шаг");
     private readonly Button _btnFwdShow = MakeButton("⏩ Всё сразу");
+    private readonly ComboBox _cmbFwdGoal = new();
     private readonly CheckBox _chkFwdHide = new()
     {
         Text = "Скрыть лишнее",
@@ -310,15 +311,30 @@ internal sealed class MainForm : Form
             BackColor = Theme.Panel
         };
 
+        _cmbFwdGoal.Width = 280;
+        _cmbFwdGoal.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cmbFwdGoal.FlatStyle = FlatStyle.Flat;
+        _cmbFwdGoal.BackColor = Theme.PanelAlt;
+        _cmbFwdGoal.ForeColor = Theme.Text;
+        _cmbFwdGoal.Font = Theme.Ui;
+        _cmbFwdGoal.Margin = new Padding(0, 4, 12, 4);
+        _cmbFwdGoal.Items.Add("(без цели)");
+        _cmbFwdGoal.SelectedIndex = 0;
+
         _tips.SetToolTip(_btnFwdPlay, "Запустить/приостановить пошаговую анимацию прямого вывода (F5).");
         _tips.SetToolTip(_btnFwdStep, "Один шаг прямого вывода (F6).");
         _tips.SetToolTip(_btnFwdShow, "Показать сразу весь результат прямого вывода.");
         _tips.SetToolTip(_chkFwdHide,
             "Скрыть промежуточные факты — оставить только входные и итоговые (recommended / pick / second_pick).");
+        _tips.SetToolTip(_cmbFwdGoal,
+            "Цель: остановить прямой вывод, как только в памяти появится факт с этим образцом.\n" +
+            "«(без цели)» — вывод до неподвижной точки.\n" +
+            "Внимание: сборка предметов будет построена по частичной памяти.");
 
         flow.Controls.AddRange(new Control[]
         {
-            _btnFwdPlay, _btnFwdStep, _btnFwdShow, _chkFwdHide
+            _btnFwdPlay, _btnFwdStep, _btnFwdShow, _chkFwdHide,
+            MakeLabel("Цель:"), _cmbFwdGoal
         });
 
         _forwardControls.Controls.Add(flow);
@@ -474,6 +490,20 @@ internal sealed class MainForm : Form
         _btnFwdStep.Click += (_, _) => ForwardStep(manual: true);
         _btnFwdShow.Click += (_, _) => ForwardShowResult();
         _chkFwdHide.CheckedChanged += (_, _) => { _relevantFacts = null; if (_forward is not null) RefreshFactList(); };
+        _cmbFwdGoal.SelectedIndexChanged += (_, _) =>
+        {
+            if (_suppress) return;
+            StopAnimation();
+            _forward = null;
+            _plan = null;
+            _relevantFacts = null;
+            _factRows.Clear();
+            _lstFacts.Rows.Clear();
+            _lstBuild.Rows.Clear();
+            _graph.SetTree(null);
+            _lblCenter.Text = "Цель изменена: нажмите «▶ Играть» для пересчёта";
+            ShowExplanation("Цель прямого вывода изменена. Нажмите «▶ Играть», «⏭ Шаг» или «⏩ Всё сразу».");
+        };
 
         // обратный режим
         _btnBwdPlay.Click += (_, _) => BackwardPlay();
@@ -697,6 +727,11 @@ internal sealed class MainForm : Form
         foreach (var goal in _kb.Goals) _cmbGoals.Items.Add(goal);
         if (_cmbGoals.Items.Count > 0) _cmbGoals.SelectedIndex = 0;
 
+        _cmbFwdGoal.Items.Clear();
+        _cmbFwdGoal.Items.Add("(без цели)");
+        foreach (var goal in _kb.Goals) _cmbFwdGoal.Items.Add(goal);
+        _cmbFwdGoal.SelectedIndex = 0;
+
         foreach (var rule in _kb.Rules)
         {
             var row = _lstRules.AddRow(rule.Id, Certainty.Format(rule.Cf), rule.ConclusionText);
@@ -731,11 +766,32 @@ internal sealed class MainForm : Form
 
     // ============================================ кнопки: прямой режим ===
 
+    private Predicate? GetForwardGoal()
+    {
+        if (_cmbFwdGoal.SelectedIndex <= 0) return null;
+        if (_cmbFwdGoal.SelectedItem is not GoalDefinition goal) return null;
+        return goal.Pattern;
+    }
+
+    private static string GoalReachedText(ForwardResult f)
+    {
+        if (!f.GoalReached) return string.Empty;
+        var stepInfo = f.GoalReachedAtStep == 0 ? "уже во входных фактах" : $"шаг {f.GoalReachedAtStep}";
+        return $"Цель достигнута: {f.ReachedGoal!.Text} cf={Certainty.Format(f.ReachedGoal.Cf)} ({stepInfo})";
+    }
+
     private void ForwardPlay()
     {
         if (_kb is null) { ShowExplanation("Сначала загрузите базу знаний."); return; }
         if (_forward is null) ComputeForward();
         if (_forward is null) return;
+
+        if (_forward.Firings.Count == 0)
+        {
+            // Анимировать нечего — показываем итог (в т.ч. случай «цель во входных»)
+            ForwardShowResult();
+            return;
+        }
 
         if (_anim == AnimMode.Forward)
         {
@@ -759,12 +815,27 @@ internal sealed class MainForm : Form
         if (_forward is null) ComputeForward();
         if (_forward is null) return;
 
+        if (_forward.Firings.Count == 0)
+        {
+            UpdateStatus();
+            _lblCenter.Text = _forward.GoalReached
+                ? GoalReachedText(_forward)
+                : "Прямой вывод: нет срабатываний";
+            return;
+        }
+
         if (manual && _anim == AnimMode.Forward) StopAnimation();
         if (_step >= _forward.Firings.Count) ResetForwardAnimation();
 
         ApplyFiring(_forward.Firings[_step]);
         _step++;
         UpdateStatus();
+
+        if (_forward.GoalReached && _step >= _forward.GoalReachedAtStep)
+        {
+            StopAnimation();
+            _lblCenter.Text = GoalReachedText(_forward);
+        }
     }
 
     private void ForwardShowResult()
@@ -784,6 +855,16 @@ internal sealed class MainForm : Form
         _bulk = false;
 
         foreach (var fact in _forward.Memory.Facts) UpsertFactRow(fact);
+
+        // Цель имеет приоритет над «лучшей рекомендацией»
+        if (_forward.GoalReached)
+        {
+            ShowFactGraph(_forward.ReachedGoal!);
+            _lblCenter.Text = GoalReachedText(_forward);
+            ShowExplanation(TextExplainer.ExplainFact(_forward.ReachedGoal!) + "\n\n" + BuildForwardSummary());
+            UpdateStatus();
+            return;
+        }
 
         var best = _forward.Memory.Facts
             .Where(f => f.Atom.Name.Equals("recommended", StringComparison.OrdinalIgnoreCase))
@@ -820,7 +901,9 @@ internal sealed class MainForm : Form
     {
         if (_kb is null) return;
 
-        _forward = new ForwardChainer().Run(_kb);
+        StopAnimation();
+
+        _forward = new ForwardChainer().Run(_kb, new ForwardOptions { Goal = GetForwardGoal() });
         _relevantFacts = null;
 
         _suppress = true;
@@ -899,7 +982,24 @@ internal sealed class MainForm : Form
         sb.AppendLine($"Заблокировано повторных срабатываний: {_forward.BlockedRepeats}");
         sb.AppendLine($"Циклических поддержек (не учтены в cf): {_forward.CircularSupports}");
         sb.AppendLine($"Время: {_forward.ElapsedMs} мс" + (_forward.LimitReached ? "  ⚠ достигнут лимит фактов" : string.Empty));
-        sb.AppendLine();
+
+        if (_forward.Goal is not null)
+        {
+            sb.AppendLine();
+            if (_forward.GoalReached)
+            {
+                var stepInfo = _forward.GoalReachedAtStep == 0
+                    ? "уже во входных фактах"
+                    : $"шаг {_forward.GoalReachedAtStep}";
+                sb.AppendLine($"ЦЕЛЬ {_forward.Goal} ДОСТИГНУТА: {_forward.ReachedGoal!.Text} " +
+                              $"cf={Certainty.Format(_forward.ReachedGoal.Cf)} ({stepInfo})");
+            }
+            else
+            {
+                sb.AppendLine($"ЦЕЛЬ {_forward.Goal} НЕ ДОСТИГНУТА за {_forward.Firings.Count} срабатываний");
+            }
+            sb.AppendLine();
+        }
 
         if (_plan is not null)
         {
@@ -1105,6 +1205,7 @@ internal sealed class MainForm : Form
             {
                 StopAnimation();
                 UpdateStatus();
+                if (_forward is { GoalReached: true }) _lblCenter.Text = GoalReachedText(_forward);
                 return;
             }
             ForwardStep(manual: false);
@@ -1539,6 +1640,11 @@ internal sealed class MainForm : Form
         }
 
         var nextId = map.Values.Max(g => g.Id);
+
+        // В полном режиме раскрываем все поддеревья, включая очень глубокие
+        // (там и живут «закопанные» циклы). В компактном — оставляем прежний
+        // небольшой лимит: там на каждую отвергнутую ветвь всё равно
+        // приходится один чип, и глубокие поддеревья не разворачиваются.
         var budget = expandRejected ? 20_000 : 600;
 
         foreach (var (search, graph) in map)
@@ -1712,6 +1818,7 @@ internal sealed class MainForm : Form
                    "  • «Прямой вывод» — факты появляются по шагам, видно каждое срабатывание;\n" +
                    "  • «Обратный вывод» — доказывает выбранную цель и строит дерево доказательства.\n\n" +
                    "В каждом режиме есть «▶ Играть / ■ Стоп», «⏭ Шаг», «⏩ Всё сразу» и «Скрыть лишнее».\n" +
+                   "В прямом режиме можно задать цель — вывод остановится при её появлении.\n" +
                    "«Предмет → враги» — отдельный обратный запрос: какие герои хуже всего переносят выбранный предмет.\n";
 
         if (warnings.Count > 0)
@@ -1747,7 +1854,9 @@ internal sealed class MainForm : Form
     {
         var trimmed = line.TrimStart();
         if (line.Contains("ЦЕЛЬ ДОКАЗАНА", StringComparison.OrdinalIgnoreCase)) return Theme.Green;
+        if (line.Contains("ЦЕЛЬ ДОСТИГНУТА", StringComparison.OrdinalIgnoreCase)) return Theme.Green;
         if (line.Contains("НЕ ДОКАЗАНА", StringComparison.OrdinalIgnoreCase)) return Theme.Red;
+        if (line.Contains("НЕ ДОСТИГНУТА", StringComparison.OrdinalIgnoreCase)) return Theme.Amber;
         if (trimmed.StartsWith("✔")) return Theme.Green;
         if (trimmed.StartsWith("✘")) return Theme.Red;
         if (trimmed.StartsWith("⟲")) return Theme.Purple;
@@ -1764,6 +1873,25 @@ internal sealed class MainForm : Form
 
     private void UpdateAnswer()
     {
+        // Если в прямом режиме задана цель — показываем её статус
+        if (_mode == Mode.Forward && _forward is not null && _forward.Goal is not null)
+        {
+            if (_forward.GoalReached)
+            {
+                _lblAnswer.ForeColor = Theme.Green;
+                var stepInfo = _forward.GoalReachedAtStep == 0 ? "уже во входных фактах"
+                                                               : $"шаг {_forward.GoalReachedAtStep}";
+                _lblAnswer.Text = $"Цель достигнута: {_forward.ReachedGoal!.Text} " +
+                                  $"cf={Certainty.Format(_forward.ReachedGoal.Cf)} ({stepInfo})";
+            }
+            else
+            {
+                _lblAnswer.ForeColor = Theme.Amber;
+                _lblAnswer.Text = $"Цель {_forward.Goal} НЕ достигнута за {_forward.Firings.Count} срабатываний";
+            }
+            return;
+        }
+
         if (_mode == Mode.Backward)
         {
             if (_currentBackward is not null && _currentBackward.Proven)
@@ -1810,7 +1938,11 @@ internal sealed class MainForm : Form
         if (_mode == Mode.Forward)
         {
             _statusLeft.Text = $"Фактов: {_factRows.Count} из {total} (выведено {derived})";
+            var goalInfo = _forward?.Goal is not null
+                ? (_forward.GoalReached ? "   ·   ✔ цель" : "   ·   ✗ цель")
+                : string.Empty;
             _statusMid.Text = $"Правил: {_kb.Rules.Count}   ·   слоёв: {layers}   ·   шагов: {_step}/{steps}" +
+                              goalInfo +
                               (_forward?.LimitReached == true ? "   ·   ⚠ лимит" : string.Empty);
             _statusRight.Text = _forward is null ? string.Empty : $"{_forward.ElapsedMs} мс";
         }

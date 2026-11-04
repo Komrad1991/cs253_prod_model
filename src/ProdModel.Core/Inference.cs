@@ -180,6 +180,9 @@ public sealed class ForwardOptions
     public double Threshold { get; init; } = Certainty.DefaultThreshold;
     public CancellationToken Cancellation { get; init; }
     public long MaxElapsedMs { get; init; }
+
+    /// <summary>Цель: остановить вывод, как только факт с этим предикатом появится в памяти.</summary>
+    public Predicate? Goal { get; init; }
 }
 
 public sealed class ForwardResult
@@ -197,6 +200,17 @@ public sealed class ForwardResult
     public bool LimitReached { get; set; }
     public long ElapsedMs { get; set; }
 
+    /// <summary>Цель, заданная при запуске (null — вывод до неподвижной точки).</summary>
+    public Predicate? Goal { get; init; }
+
+    /// <summary>Факт, при котором достигнута цель (null — цель не задана или не достигнута).</summary>
+    public Fact? ReachedGoal { get; set; }
+
+    /// <summary>Шаг, на котором появился целевой факт (0 — уже во входных, -1 — не достигнута).</summary>
+    public int GoalReachedAtStep { get; set; } = -1;
+
+    public bool GoalReached => ReachedGoal is not null;
+
     public int InputCount => Memory.Facts.Count(f => !f.IsDerived);
     public int DerivedCount => Memory.Facts.Count(f => f.IsDerived);
 
@@ -205,6 +219,11 @@ public sealed class ForwardResult
 
 /// <summary>
 /// Прямой вывод (data-driven) с semi-naive-подходом.
+///
+/// Если задан <see cref="ForwardOptions.Goal"/>, вывод останавливается, как только
+/// в рабочей памяти появляется факт, матчащийся с целью. <see cref="ForwardResult.Firings"/>
+/// в этом случае усечён ровно до шага достижения — анимация «Играть/Шаг» естественно
+/// заканчивается на нужном шаге без дополнительной логики в UI.
 /// </summary>
 public sealed class ForwardChainer
 {
@@ -219,11 +238,26 @@ public sealed class ForwardChainer
             memory.AddInput(new Fact(fact.Atom, fact.Cf, FactOrigin.Input));
         }
 
-        var result = new ForwardResult { Memory = memory };
+        var result = new ForwardResult { Memory = memory, Goal = opt.Goal };
+
+        // Цель могла быть во входных фактах — тогда ни одного срабатывания не нужно
+        if (opt.Goal is not null)
+        {
+            var initial = FindGoalMatch(memory, opt.Goal);
+            if (initial is not null)
+            {
+                result.ReachedGoal = initial;
+                result.GoalReachedAtStep = 0;
+                result.Layers = memory.MaxDerivedDepth();
+                result.ElapsedMs = sw.ElapsedMilliseconds;
+                return result;
+            }
+        }
 
         var fired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var blocked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var step = 0;
+        var goalReached = false;
 
         var rulesByPredicate = new Dictionary<string, HashSet<Rule>>(StringComparer.OrdinalIgnoreCase);
         foreach (var rule in kb.Rules)
@@ -371,6 +405,19 @@ public sealed class ForwardChainer
                         Layer = layer
                     });
 
+                    // Приоритет за достижением цели над лимитом фактов
+                    if (opt.Goal is not null)
+                    {
+                        var goalMatch = FindGoalMatch(memory, opt.Goal);
+                        if (goalMatch is not null)
+                        {
+                            result.ReachedGoal = goalMatch;
+                            result.GoalReachedAtStep = step;
+                            goalReached = true;
+                            break;
+                        }
+                    }
+
                     if (memory.Count > opt.MaxFacts)
                     {
                         result.LimitReached = true;
@@ -378,17 +425,31 @@ public sealed class ForwardChainer
                     }
                 }
 
-                if (result.LimitReached) break;
+                if (result.LimitReached || goalReached) break;
             }
 
             affected = nextAffected;
-            if (result.LimitReached || !changed || nextAffected.Count == 0) break;
+            if (result.LimitReached || goalReached || !changed || nextAffected.Count == 0) break;
         }
 
         result.BlockedRepeats = blocked.Count;
         result.Layers = memory.MaxDerivedDepth();
         result.ElapsedMs = sw.ElapsedMilliseconds;
         return result;
+    }
+
+    /// <summary>Поиск факта, матчащегося с целью: точное совпадение для ground, перебор для переменных.</summary>
+    internal static Fact? FindGoalMatch(WorkingMemory memory, Predicate goal)
+    {
+        if (goal.IsGround) return memory.Find(goal);
+
+        foreach (var fact in memory.For(goal.Name))
+        {
+            if (fact.Atom.Arity != goal.Arity) continue;
+            var bindings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (goal.TryMatch(fact.Atom, bindings)) return fact;
+        }
+        return null;
     }
 
     internal static string Canonical(IReadOnlyDictionary<string, string> bindings)
@@ -476,8 +537,8 @@ public sealed class RejectedAttempt
 
 public sealed class BackwardOptions
 {
-    public int MaxDepth { get; init; } = 20;
-    public int MaxNodes { get; init; } = 40_000;
+    public int MaxDepth { get; init; } = 14;
+    public int MaxNodes { get; init; } = 30_000;
     public bool UseMemo { get; init; } = true;
     public bool ReuseMemo { get; init; }
     public int MaxGoalInstances { get; init; } = 4000;
@@ -727,6 +788,9 @@ public sealed class BackwardEngine
 
     private bool OpenRule(SearchNode node, NodeState state)
     {
+        // ВАЖНО: не чистим node.Children заранее — при провале попытки прежние
+        // дети должны остаться, чтобы BuildBackwardGraph мог их показать
+        // (именно там живут глубокие циклы).
         while (state.RuleIndex < state.Candidates.Count)
         {
             if (_aborted || _options.Cancellation.IsCancellationRequested) { _aborted = true; return false; }
@@ -734,15 +798,20 @@ public sealed class BackwardEngine
             var (rule, bindings) = state.Candidates[state.RuleIndex];
 
             var children = TryBuildChildren(node, rule, bindings);
-            if (children is null) { state.RuleIndex++; continue; }
+            if (children is null)
+            {
+                state.RuleIndex++;
+                continue;
+            }
 
-            node.Children.Clear();          // только когда реально строим новый набор
+            node.Children.Clear();
             node.Rule = rule;
             node.Bindings = bindings;
             node.Children.AddRange(children);
             state.Expanded = true;
             return true;
         }
+
         return false;
     }
 
