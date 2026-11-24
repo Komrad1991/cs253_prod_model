@@ -1,82 +1,90 @@
-kb "Deadlock: mini reverse inference + guaranteed cycle probe"
-description "Мини-база: обратный вывод uncovered + гарантированный цикл cycle_a<->cycle_b."
+# ============================================================================
+#  Мини-база ProdModel: обратный вывод uncovered + гарантированный цикл.
+#
+#  Формат — простой, пропозициональный:
+#    ФАКТЫ:    имя_факта - Отображаемое имя
+#    ПРАВИЛА:  условие1, условие2, not условие3 -> заключение1, заключение2
+#    ЦЕЛИ:     имя_цели
+#
+#  Что проверить в приложении:
+#   1. Прямой вывод: из our_item_* и hero_tag_* выводятся uncovered_*.
+#   2. Обратный вывод, цель uncovered_Curse_MoKrill_hard_cc — доказана.
+#   3. Обратный вывод, цель cycle_a_MetalSkin — упирается в цикл
+#      cycle_a_MetalSkin -> cycle_b_MetalSkin -> cycle_a_MetalSkin:
+#      ветвь отбрасывается с пометкой «цикл предотвращён», но другой
+#      продукции у цели нет, поэтому она остаётся недоказанной.
+# ============================================================================
 
-# --- домены ---
-sort hero = Haze, Seven, MoKrill
-sort item = MetalSkin, BulletArmor, Curse, Unstoppable
-sort threat = bullet_dps, aoe_channel, hard_cc
-sort need = anti_bullet, anti_channel, anti_cc
+ИМЯ: Deadlock: mini reverse inference + guaranteed cycle probe
+ОПИСАНИЕ: Мини-база: обратный вывод uncovered + гарантированный цикл cycle_a <-> cycle_b.
 
+# ------------------------------------------------------------------ ФАКТЫ
+
+ФАКТЫ:
 # --- герои ---
-fact hero(Haze)
-fact hero(Seven)
-fact hero(MoKrill)
+hero_Haze - Haze
+hero_Seven - Seven
+hero_MoKrill - MoKrill
 
 # --- профили героев: какие угрозы создают ---
-fact hero_tag(Haze, bullet_dps) cf=0.95
-fact hero_tag(Seven, aoe_channel) cf=0.95
-fact hero_tag(MoKrill, hard_cc) cf=0.95
+hero_tag_Haze_bullet_dps - Haze — bullet_dps
+hero_tag_Seven_aoe_channel - Seven — aoe_channel
+hero_tag_MoKrill_hard_cc - MoKrill — hard_cc
 
-# --- предметы и что они закрывают ---
-fact item(MetalSkin)
-fact item(BulletArmor)
-fact item(Curse)
-fact item(Unstoppable)
+# --- предметы ---
+item_MetalSkin - MetalSkin
+item_BulletArmor - BulletArmor
+item_Curse - Curse
+item_Unstoppable - Unstoppable
 
-fact item_provides(MetalSkin, anti_channel)
-fact item_provides(BulletArmor, anti_bullet)
-fact item_provides(Curse, anti_channel)
-fact item_provides(Unstoppable, anti_cc)
+# --- что предметы закрывают ---
+item_provides_MetalSkin_anti_channel - MetalSkin — anti_channel
+item_provides_BulletArmor_anti_bullet - BulletArmor — anti_bullet
+item_provides_Curse_anti_channel - Curse — anti_channel
+item_provides_Unstoppable_anti_cc - Unstoppable — anti_cc
 
 # --- наши выбранные предметы для обратного запроса ---
-fact our_item(MetalSkin)
-fact our_item(Curse)
+our_item_MetalSkin - MetalSkin
+our_item_Curse - Curse
 
+# ---------------------------------------------------------------- ПРАВИЛА
+
+ПРАВИЛА:
 # ============================================================================
 # Обратный вывод: выбранный предмет -> какие угрозы героев им не закрыты
 # ============================================================================
 
-rule REV_BULLET_DPS cf=0.90
-  if our_item(?i)
-  and hero_tag(?h, bullet_dps)
-  and not item_provides(?i, anti_bullet)
-  then uncovered(?i, ?h, bullet_dps)
-  why "bullet_dps: предмет не даёт anti_bullet — герой остаётся опасным."
+# bullet_dps: ни MetalSkin, ни Curse не дают anti_bullet — герой остаётся опасным.
+our_item_MetalSkin, hero_tag_Haze_bullet_dps, not item_provides_MetalSkin_anti_bullet -> uncovered_MetalSkin_Haze_bullet_dps
+our_item_Curse, hero_tag_Haze_bullet_dps, not item_provides_Curse_anti_bullet -> uncovered_Curse_Haze_bullet_dps
 
-rule REV_AOE_CHANNEL cf=0.90
-  if our_item(?i)
-  and hero_tag(?h, aoe_channel)
-  and not item_provides(?i, anti_channel)
-  then uncovered(?i, ?h, aoe_channel)
-  why "aoe_channel: предмет не даёт anti_channel — герой остаётся опасным."
+# aoe_channel: MetalSkin и Curse закрывают anti_channel — правил нет, угроза закрыта.
 
-rule REV_HARD_CC cf=0.90
-  if our_item(?i)
-  and hero_tag(?h, hard_cc)
-  and not item_provides(?i, anti_cc)
-  then uncovered(?i, ?h, hard_cc)
-  why "hard_cc: предмет не даёт anti_cc — герой остаётся опасным."
+# hard_cc: ни MetalSkin, ни Curse не дают anti_cc — герой остаётся опасным.
+our_item_MetalSkin, hero_tag_MoKrill_hard_cc, not item_provides_MetalSkin_anti_cc -> uncovered_MetalSkin_MoKrill_hard_cc
+our_item_Curse, hero_tag_MoKrill_hard_cc, not item_provides_Curse_anti_cc -> uncovered_Curse_MoKrill_hard_cc
 
 # ============================================================================
 # Гарантированный цикл для проверки обратного вывода.
-# goal cycle_a(?i) -> CYCLE_A -> cycle_b(?i) -> CYCLE_B -> cycle_a(?i)
-# Базового правила, закрывающего cycle_b, нет: цикл обязан сработать.
+# cycle_a_MetalSkin -> CYCLE_A -> cycle_b_MetalSkin -> CYCLE_B -> cycle_a_MetalSkin
+# Базового правила, закрывающего cycle_b_*, нет: цикл обязан сработать.
 # ============================================================================
 
-rule CYCLE_A cf=1.00
-  if item(?i)
-  and cycle_b(?i)
-  then cycle_a(?i)
-  why "cycle_a зависит от cycle_b; item(?i) только связывает переменную."
+item_MetalSkin, cycle_b_MetalSkin -> cycle_a_MetalSkin   # cycle_a зависит от cycle_b; item_* только связывает предмет
+cycle_a_MetalSkin -> cycle_b_MetalSkin                   # cycle_b зависит от cycle_a — замыкает цикл
 
-rule CYCLE_B cf=1.00
-  if cycle_a(?i)
-  then cycle_b(?i)
-  why "cycle_b зависит от cycle_a — замыкает цикл."
+item_BulletArmor, cycle_b_BulletArmor -> cycle_a_BulletArmor
+cycle_a_BulletArmor -> cycle_b_BulletArmor
 
-# ============================================================================
-# Цели
-# ============================================================================
+item_Curse, cycle_b_Curse -> cycle_a_Curse
+cycle_a_Curse -> cycle_b_Curse
 
-goal uncovered(?i:item, ?h:hero, ?t:threat)
-goal cycle_a(?i:item)
+item_Unstoppable, cycle_b_Unstoppable -> cycle_a_Unstoppable
+cycle_a_Unstoppable -> cycle_b_Unstoppable
+
+# ------------------------------------------------------------------ ЦЕЛИ
+
+ЦЕЛИ:
+uncovered_MetalSkin_Haze_bullet_dps
+uncovered_Curse_MoKrill_hard_cc
+cycle_a_MetalSkin

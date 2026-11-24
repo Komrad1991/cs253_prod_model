@@ -4,25 +4,13 @@
     "App": {
       "commandName": "Project"
     },
-    "App (1 hero)": {
+    "App (demo)": {
       "commandName": "Project",
-      "commandLineArgs": "--input data\\input\\1_haze.txt"
+      "commandLineArgs": "--kb data\\demo.txt"
     },
-    "App (6 heroes)": {
+    "App (test)": {
       "commandName": "Project",
-      "commandLineArgs": "--input data\\input\\6_full.txt"
-    },
-    "App (forward)": {
-      "commandName": "Project",
-      "commandLineArgs": "--forward"
-    },
-    "App (backward)": {
-      "commandName": "Project",
-      "commandLineArgs": "--backward"
-    },
-    "App (cycles)": {
-      "commandName": "Project",
-      "commandLineArgs": "--kb data\\demo_cycles.txt --backward"
+      "commandLineArgs": "--kb data\\test.txt"
     }
   }
 }

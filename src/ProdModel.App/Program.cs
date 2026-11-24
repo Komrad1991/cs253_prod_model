@@ -1,3 +1,6 @@
+using System;
+using System.IO;
+using System.Linq;
 using System.Windows.Forms;
 
 namespace ProdModel.App;
@@ -8,12 +11,14 @@ internal static class Program
     private static void Main()
     {
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        Application.EnableVisualStyles();
+
+        // Обязательно до первого окна: SetColorMode инициализирует WinForms,
+        // после него SetCompatibleTextRenderingDefault уже бросает исключение.
+        Application.SetCompatibleTextRenderingDefault(false);
 
         // тёмные системные элементы (полосы прокрутки, выпадающие списки) в Windows 11
         try { Application.SetColorMode(SystemColorMode.Dark); } catch { /* среда без поддержки */ }
-
-        Application.EnableVisualStyles();
-        Application.SetCompatibleTextRenderingDefault(false);
 
         Application.ThreadException += (_, e) => Log(e.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, e) => Log(e.ExceptionObject as Exception);

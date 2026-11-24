@@ -1,251 +1,169 @@
 # ============================================================================
 #  Демонстрационная база знаний ProdModel — "Deadlock Demo"
 #
-#  Что и как проверить:
+#  Формат — простой, пропозициональный (без аргументов и коэффициентов):
+#    ФАКТЫ:    имя_факта - Отображаемое имя
+#    ПРАВИЛА:  условие1, условие2, not условие3 -> заключение1, заключение2
+#    ЦЕЛИ:     имя_цели
+#  Всё, что в богатом формате было предикатом с аргументами, здесь
+#  «сплющено» в одно имя: hero_tag(Haze, bullet_dps) -> hero_tag_Haze_bullet_dps.
 #
-#   1. ПРЯМОЙ ВЫВОД (по умолчанию)
+#  Что и как проверить в приложении:
+#
+#   1. ПРЯМОЙ ВЫВОД (переключатель «Прямой вывод»)
 #      ▶ Играть / ⏭ Шаг / ⏩ Всё сразу — цепочки
-#      enemy(...) → threat(...) → pick(...) → recommended(...)
-#      Флажок «Скрыть лишнее» прячет промежуточные факты.
+#      hero_tag_* -> threat_* -> pick_* -> recommended_*
+#      Граф слева показывает слои вывода, вкладка «Факты» — источник факта.
 #
 #   2. ОТРИЦАНИЕ (not)
-#      Правило PURE_CC срабатывает только если threat(cc) есть,
-#      а escape_threat не выводится. Добавьте Lash в состав
-#      (кнопка «Состав…») — PURE_CC перестанет срабатывать.
+#      Правило threat_cc, not escape_threat -> threat_pure_cc срабатывает,
+#      только если escape_threat не выведен. В этой базе Lash с тегом escape
+#      присутствует, поэтому escape_threat выводится и threat_pure_cc НЕ
+#      появляется. Уберите строку hero_tag_Lash_escape из ФАКТОВ — появится.
 #
-#   3. СБОРКА (вкладка «Сборка» слева)
-#      Из выведенных pick(...) собираются слоты 4/4/4 и лимит 3 актива.
-#      Второй контр-предмет — second_pick(...) — попадает в «ВТОРОЙ КОНТР».
-#      Пометка "Лучший контрпик" сверху формы.
+#   3. ОБРАТНЫЙ ВЫВОД, НЕСКОЛЬКО РЕШЕНИЙ
+#      Переключатель «Обратный вывод», цель pick_MetalSkin_anti_bullet
+#      (или любую другую pick_*) → «▶ Играть». Клик по строке результата
+#      строит дерево доказательства справа.
 #
-#   4. ОБРАТНЫЙ ВЫВОД, НЕСКОЛЬКО РЕШЕНИЙ
-#      Режим «Обратный вывод», цель pick(?i:item, ?n:need) → «▶ Играть».
-#      В списке результатов будет 5 доказанных pick'ов (MetalSkin,
-#      DebuffRemover, Knockdown, Curse, ReturnFire). Клик по строке
-#      строит дерево доказательства.
+#   4. ЦИКЛ В ОБРАТНОМ ВЫВОДЕ (главное демо!)
+#      Цель cycle_a. Прямой вывод её не получает (факта cycle_b нет),
+#      а обратный уходит в цикл cycle_a -> cycle_b -> cycle_a: ветвь
+#      помечается «цикл предотвращён», красным чипом в дереве справа
+#      видно, где именно поиск замкнулся. Альтернативной продукции у
+#      cycle_a нет, поэтому цель честно остаётся недоказанной.
+#      Случай «цикл предотвращён, а ответ всё равно получен» — в основной
+#      базе deadlock_kb.txt, цель i_answers_Knockdown.
 #
-#   5. ЦИКЛ В ОТКЛОНЁННОЙ ВЕТВИ (главное демо!)
-#      Режим «Обратный вывод», цель recommended(?i:item) → «▶ Играть».
-#      В результате будет ровно один recommended(Curse), у которого
-#      высветится победа через RECOMMENDED_SAFE (cf≈0.37), а ветвь
-#      RECOMMENDED_CYCLE (cf=0.95 — выше!) уйдёт в rejected.
-#
-#      • С галочкой «Скрыть лишнее» — увидите только чип «✕ cycle_a».
-#      • СНИМИТЕ галочку — развернётся весь путь:
-#            RECOMMENDED_CYCLE (отклонено)
-#              └ cycle_a          (отклонено)
-#                  └ cycle_b      (отклонено)
-#                      └ ⟲ cycle_a — «цикл предотвращён · RECOMMENDED_CYCLE»
-#      Это и есть «глубокий цикл», который виден только без галочки.
-#
-#   6. ОБРАТНЫЙ ЗАПРОС «Предмет → враги»
-#      Кнопка сверху. Выберите, например, Curse — увидите, кого он
-#      полностью закрывает, и на кого не работает.
-#      Используются правила REV_UNCOVERED + факты hero_tag/covers.
-#      В обратном режиме можно напрямую выбрать цель
-#      uncovered(?i:item, ?h:hero, ?t:tag) — получите 16 доказательств
-#      для предмета MetalSkin (он зафиксирован как our_item).
+#   5. ОБРАТНЫЙ ЗАПРОС «предмет -> герои»
+#      Цель uncovered_MetalSkin_Haze_escape: MetalSkin не покрывает escape,
+#      поэтому герой остаётся опасным. Для bullet_dps правило не срабатывает —
+#      MetalSkin этот тег покрывает (covers_MetalSkin_bullet_dps).
 # ============================================================================
 
-kb "Deadlock Demo — все возможности"
-description "Демонстрационная база: прямой и обратный вывод, циклы, отрицания, сборка предметов, обратный запрос."
+ИМЯ: Deadlock Demo — все возможности
+ОПИСАНИЕ: Демонстрационная база: прямой и обратный вывод, отрицания, циклы, вторичный контр-предмет, обратный запрос uncovered.
 
-# ------------------------------------------------------------------ Сорта
+# ------------------------------------------------------------------ ФАКТЫ
 
-sort hero = Haze, Seven, Abrams, Wraith, Lash, Bebop
-sort item = MetalSkin, DebuffRemover, Knockdown, ReturnFire, SilenceGlyph, Curse
-sort tag  = bullet_dps, spirit_burst, cc, sustain, escape, silence
-sort need = anti_bullet, anti_cc, anti_spirit, anti_escape
+ФАКТЫ:
+# --- профили героев: какие теги угроз у них есть ---
+hero_tag_Haze_bullet_dps - Haze — bullet_dps
+hero_tag_Haze_escape - Haze — escape
+hero_tag_Seven_bullet_dps - Seven — bullet_dps
+hero_tag_Seven_spirit_burst - Seven — spirit_burst
+hero_tag_Abrams_sustain - Abrams — sustain
+hero_tag_Abrams_cc - Abrams — cc
+hero_tag_Wraith_spirit_burst - Wraith — spirit_burst
+hero_tag_Wraith_escape - Wraith — escape
+hero_tag_Lash_cc - Lash — cc
+hero_tag_Lash_escape - Lash — escape
+hero_tag_Bebop_cc - Bebop — cc
+hero_tag_Bebop_spirit_burst - Bebop — spirit_burst
 
-# ----------------------------------------------- Факты: профили героев
+# --- предметы с активной способностью ---
+item_active_MetalSkin - MetalSkin
+item_active_DebuffRemover - DebuffRemover
+item_active_Knockdown - Knockdown
+item_active_ReturnFire - ReturnFire
+item_active_Curse - Curse
 
-fact hero_tag(Haze,    bullet_dps)   cf=0.95
-fact hero_tag(Haze,    escape)       cf=0.85
-fact hero_tag(Seven,   bullet_dps)   cf=0.90
-fact hero_tag(Seven,   spirit_burst) cf=0.85
-fact hero_tag(Abrams,  sustain)      cf=0.90
-fact hero_tag(Abrams,  cc)           cf=0.80
-fact hero_tag(Wraith,  spirit_burst) cf=0.85
-fact hero_tag(Wraith,  escape)       cf=0.75
-fact hero_tag(Lash,    cc)           cf=0.90
-fact hero_tag(Lash,    escape)       cf=0.70
-fact hero_tag(Bebop,   cc)           cf=0.90
-fact hero_tag(Bebop,   spirit_burst) cf=0.75
+# --- покрытие тегов предметами (для обратного запроса) ---
+covers_MetalSkin_bullet_dps - MetalSkin — bullet_dps
+covers_DebuffRemover_cc - DebuffRemover — cc
+covers_Knockdown_escape - Knockdown — escape
+covers_Knockdown_cc - Knockdown — cc
+covers_ReturnFire_bullet_dps - ReturnFire — bullet_dps
+covers_SilenceGlyph_silence - SilenceGlyph — silence
+covers_Curse_spirit_burst - Curse — spirit_burst
+covers_Curse_cc - Curse — cc
 
-# ------------------------------------------- Факты: свойства предметов
+# --- фиксированный «наш» предмет для демо обратного запроса ---
+our_item_MetalSkin - MetalSkin
 
-fact item_slot(MetalSkin,     vitality) cf=1.0
-fact item_slot(DebuffRemover, vitality) cf=1.0
-fact item_slot(Knockdown,     spirit)   cf=1.0
-fact item_slot(ReturnFire,    weapon)   cf=1.0
-fact item_slot(SilenceGlyph,  spirit)   cf=1.0
-fact item_slot(Curse,         spirit)   cf=1.0
+# ---------------------------------------------------------------- ПРАВИЛА
 
-fact item_cost(MetalSkin,     3000) cf=1.0
-fact item_cost(DebuffRemover, 4250) cf=1.0
-fact item_cost(Knockdown,     3000) cf=1.0
-fact item_cost(ReturnFire,    3000) cf=1.0
-fact item_cost(SilenceGlyph,  3000) cf=1.0
-fact item_cost(Curse,         6200) cf=1.0
+ПРАВИЛА:
+# ============================================================================
+# Определение угроз по тегам героев
+# ============================================================================
 
-fact item_active(MetalSkin)     cf=1.0
-fact item_active(DebuffRemover) cf=1.0
-fact item_active(Knockdown)     cf=1.0
-fact item_active(ReturnFire)    cf=1.0
-fact item_active(Curse)         cf=1.0
+hero_tag_Haze_bullet_dps -> threat_bullet_dps        # Haze наносит огромный непрерывный пулевой урон
+hero_tag_Seven_bullet_dps -> threat_bullet_dps       # Seven давит пулями на линии
+hero_tag_Seven_spirit_burst -> threat_spirit_burst   # Seven наносит взрывной спиритуальный урон
+hero_tag_Abrams_cc -> threat_cc                      # Abrams имеет контроль (Shoulder Charge)
+hero_tag_Abrams_sustain -> threat_sustain            # Abrams восстанавливается и долго живёт
+hero_tag_Wraith_spirit_burst -> threat_spirit_burst  # Wraith наносит взрывной спиритуальный урон
+hero_tag_Lash_cc -> threat_cc                        # Lash имеет контроль
+hero_tag_Bebop_cc -> threat_cc                       # Bebop имеет контроль (Hook)
+hero_tag_Bebop_spirit_burst -> threat_spirit_burst   # Bebop наносит взрывной спиритуальный урон
 
-# Фиксированный our_item — для демо обратного запроса через цель
-# uncovered(...).  При нажатии «Предмет → враги» добавляется ещё один
-# our_item для выбранного предмета — старый не мешает.
-fact our_item(MetalSkin) cf=1.0
+# ============================================================================
+# Отрицание (not)
+# ============================================================================
 
-# ------------------------- Факты: покрытие тегов предметами (Reverse)
+hero_tag_Lash_escape -> escape_threat                # у врага есть герой с побегом
+threat_cc, not escape_threat -> threat_pure_cc       # чистый контроль без побегов: приоритет DebuffRemover
 
-fact covers(MetalSkin,     bullet_dps)   cf=0.70
-fact covers(DebuffRemover, cc)           cf=0.80
-fact covers(Knockdown,     escape)       cf=0.85
-fact covers(Knockdown,     cc)           cf=0.50
-fact covers(ReturnFire,    bullet_dps)   cf=0.60
-fact covers(SilenceGlyph,  silence)      cf=0.90
-fact covers(Curse,         spirit_burst) cf=0.85
-fact covers(Curse,         cc)           cf=0.75
+# ============================================================================
+# Рекомендации предметов
+# ============================================================================
 
-# ----------------------------------------- Правила: определение угроз
+threat_bullet_dps -> pick_MetalSkin_anti_bullet      # MetalSkin — универсальный ответ на пулевой урон
+threat_cc -> pick_DebuffRemover_anti_cc              # DebuffRemover снимает контроль
+threat_cc -> pick_Knockdown_anti_cc                  # Knockdown полезен против escape-целей
+threat_spirit_burst -> pick_Curse_anti_spirit        # Curse блокирует спиритуальные ульты
+threat_bullet_dps, threat_cc -> pick_ReturnFire_anti_bullet  # ReturnFire отвечает пулями, но уступает MetalSkin
 
-rule HZ_BULLET cf=0.90
-  if enemy(Haze) and hero_tag(Haze, bullet_dps)
-  then threat(bullet_dps)
-  why "Haze наносит огромный непрерывный пулевой урон"
+# ============================================================================
+# Вторичный контр-предмет
+# ============================================================================
 
-rule SEVEN_BULLET cf=0.85
-  if enemy(Seven) and hero_tag(Seven, bullet_dps)
-  then threat(bullet_dps)
-  why "Seven давит пулями на линии"
+threat_spirit_burst -> second_pick_SilenceGlyph_anti_spirit  # SilenceGlyph — второй ответ на спиритуальные угрозы
+threat_cc, escape_threat -> second_pick_Knockdown_anti_escape # Knockdown сбивает побег
 
-rule SEVEN_SPIRIT cf=0.80
-  if enemy(Seven) and hero_tag(Seven, spirit_burst)
-  then threat(spirit_burst)
-  why "Seven наносит взрывной спиритуальный урон"
+# ============================================================================
+# Демонстрация циклов (для обратного вывода)
+# Цель cycle_a не выводится прямым выводом: факта cycle_b нет.
+# Обратный вывод пробует cycle_b -> cycle_a, затем cycle_a -> cycle_b
+# и возвращается в уже доказываемую цель — фиксируется цикл.
+# ============================================================================
 
-rule ABRAMS_CC cf=0.85
-  if enemy(Abrams) and hero_tag(Abrams, cc)
-  then threat(cc)
-  why "Abrams имеет контроль (Shoulder Charge)"
+cycle_b -> cycle_a                                   # цикл: cycle_a требует cycle_b
+cycle_a -> cycle_b                                   # цикл: cycle_b требует cycle_a
+threat_spirit_burst -> recommended_Curse             # recommended_Curse через реальную угрозу spirit_burst
 
-rule ABRAMS_SUSTAIN cf=0.80
-  if enemy(Abrams) and hero_tag(Abrams, sustain)
-  then threat(sustain)
-  why "Abrams восстанавливается и долго живёт"
+# ============================================================================
+# Рекомендация — любой подтверждённый pick
+# ============================================================================
 
-rule WRATH_SPIRIT cf=0.80
-  if enemy(Wraith) and hero_tag(Wraith, spirit_burst)
-  then threat(spirit_burst)
+pick_MetalSkin_anti_bullet -> recommended_MetalSkin
+pick_DebuffRemover_anti_cc -> recommended_DebuffRemover
+pick_Knockdown_anti_cc -> recommended_Knockdown
+pick_Curse_anti_spirit -> recommended_Curse
+pick_ReturnFire_anti_bullet -> recommended_ReturnFire
 
-rule LASH_CC cf=0.85
-  if enemy(Lash) and hero_tag(Lash, cc)
-  then threat(cc)
+# ============================================================================
+# Обратный запрос: предмет не покрывает тег героя -> uncovered
+# ============================================================================
 
-rule BEBOP_CC cf=0.85
-  if enemy(Bebop) and hero_tag(Bebop, cc)
-  then threat(cc)
+our_item_MetalSkin, hero_tag_Haze_bullet_dps, not covers_MetalSkin_bullet_dps -> uncovered_MetalSkin_Haze_bullet_dps
+our_item_MetalSkin, hero_tag_Haze_escape, not covers_MetalSkin_escape -> uncovered_MetalSkin_Haze_escape
+our_item_MetalSkin, hero_tag_Seven_bullet_dps, not covers_MetalSkin_bullet_dps -> uncovered_MetalSkin_Seven_bullet_dps
+our_item_MetalSkin, hero_tag_Seven_spirit_burst, not covers_MetalSkin_spirit_burst -> uncovered_MetalSkin_Seven_spirit_burst
+our_item_MetalSkin, hero_tag_Abrams_sustain, not covers_MetalSkin_sustain -> uncovered_MetalSkin_Abrams_sustain
+our_item_MetalSkin, hero_tag_Abrams_cc, not covers_MetalSkin_cc -> uncovered_MetalSkin_Abrams_cc
+our_item_MetalSkin, hero_tag_Wraith_spirit_burst, not covers_MetalSkin_spirit_burst -> uncovered_MetalSkin_Wraith_spirit_burst
+our_item_MetalSkin, hero_tag_Wraith_escape, not covers_MetalSkin_escape -> uncovered_MetalSkin_Wraith_escape
+our_item_MetalSkin, hero_tag_Lash_cc, not covers_MetalSkin_cc -> uncovered_MetalSkin_Lash_cc
+our_item_MetalSkin, hero_tag_Lash_escape, not covers_MetalSkin_escape -> uncovered_MetalSkin_Lash_escape
+our_item_MetalSkin, hero_tag_Bebop_cc, not covers_MetalSkin_cc -> uncovered_MetalSkin_Bebop_cc
+our_item_MetalSkin, hero_tag_Bebop_spirit_burst, not covers_MetalSkin_spirit_burst -> uncovered_MetalSkin_Bebop_spirit_burst
 
-rule BEBOP_SPIRIT cf=0.70
-  if enemy(Bebop) and hero_tag(Bebop, spirit_burst)
-  then threat(spirit_burst)
+# ------------------------------------------------------------------ ЦЕЛИ
 
-# ----------------------------------- Правила: отрицание (not)
-
-rule ESCAPE_THREAT cf=0.70
-  if enemy(Lash) and hero_tag(Lash, escape)
-  then escape_threat
-  why "у врага есть герой с побегом"
-
-rule PURE_CC cf=0.75
-  if threat(cc) and not escape_threat
-  then threat(pure_cc)
-  why "чистый контроль без побегов: приоритет DebuffRemover"
-
-# --------------------------------- Правила: рекомендации предметов
-
-rule ANTI_BULLET_METAL cf=0.85
-  if threat(bullet_dps)
-  then pick(MetalSkin, anti_bullet)
-  why "MetalSkin — универсальный ответ на пулевой урон"
-
-rule ANTI_CC_DEBUFF cf=0.90
-  if threat(cc)
-  then pick(DebuffRemover, anti_cc)
-  why "DebuffRemover снимает контроль"
-
-rule ANTI_CC_KNOCK cf=0.70
-  if threat(cc)
-  then pick(Knockdown, anti_cc)
-  why "Knockdown полезен против escape-целей"
-
-rule ANTI_SPIRIT_CURSE cf=0.85
-  if threat(spirit_burst)
-  then pick(Curse, anti_spirit)
-  why "Curse блокирует спиритуальные ульты"
-
-rule ANTI_BULLET_RETURN cf=0.55
-  if threat(bullet_dps) and threat(cc)
-  then pick(ReturnFire, anti_bullet)
-  why "ReturnFire отвечает пулями, но уступает MetalSkin"
-
-# --------------------------------- Правила: вторичный контр-предмет
-
-rule SECOND_PICK_SILENCE cf=0.72
-  if threat(spirit_burst)
-  then second_pick(SilenceGlyph, anti_spirit)
-  why "SilenceGlyph — второй ответ на спиритуальные угрозы"
-
-rule SECOND_PICK_KNOCK cf=0.65
-  if threat(cc) and escape_threat
-  then second_pick(Knockdown, anti_escape)
-  why "Knockdown сбивает побег"
-
-# ---------------------------------------- Правила: рекомендация
-
-rule RECOMMENDED cf=0.90
-  if pick(?item, ?need)
-  then recommended(?item)
-  why "рекомендация — любой подтверждённый pick"
-
-# --------------------------- Демонстрация циклов (для обратного)
-
-rule CYCLE_A cf=0.90
-  if cycle_b
-  then cycle_a
-  why "цикл: A требует B"
-
-rule CYCLE_B cf=0.90
-  if cycle_a
-  then cycle_b
-  why "цикл: B требует A"
-
-# RECOMMENDED_CYCLE пробуется ПЕРВЫМ (cf=0.95 > 0.55), потому что
-# обратный вывод сортирует кандидатов по убыванию cf. Он проваливается
-# из-за цикла и оставляет отклонённую ветвь cycle_a → cycle_b → ⟲ cycle_a.
-# RECOMMENDED_SAFE затем доказывает recommended(Curse) по-настоящему.
-rule RECOMMENDED_CYCLE cf=0.95
-  if cycle_a
-  then recommended(Curse)
-  why "Curse рекомендуется, только если удаётся доказать cycle_a (а это цикл)"
-
-rule RECOMMENDED_SAFE cf=0.55
-  if threat(spirit_burst)
-  then recommended(Curse)
-  why "резервный путь: recommended(Curse) через реальную угрозу spirit_burst"
-
-# ------------------------------------ Обратный запрос: uncovered
-
-rule REV_UNCOVERED cf=0.85
-  if our_item(?item) and hero_tag(?hero, ?tag) and not covers(?item, ?tag)
-  then uncovered(?item, ?hero, ?tag)
-  why "предмет не покрывает тег героя"
-
-# ------------------------------------------------------------------ Цели
-
-goal pick(?i:item, ?n:need)
-goal recommended(?i:item)
-goal uncovered(?i:item, ?h:hero, ?t:tag)
+ЦЕЛИ:
+pick_MetalSkin_anti_bullet
+recommended_Curse
+uncovered_MetalSkin_Haze_escape
+cycle_a

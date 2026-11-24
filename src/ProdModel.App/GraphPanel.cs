@@ -46,11 +46,11 @@ internal enum GraphState
 internal sealed class GraphPanel : Control
 {
     private const int MainW = 250;
-    private const int MainH = 54;
+    private const int MainH = 46;
     private const int ChipW = 216;
     private const int ChipH = 46;
     private const int GapX = 12;
-    private const int GapY = 28;
+    private const int GapY = 14;
     private const int ChipGapY = 8;
     private const int ChipOffsetX = 26;
 
@@ -125,11 +125,15 @@ internal sealed class GraphPanel : Control
             new RectangleF(rect.X + 12, rect.Y + 8, rect.Width - 20, rect.Height - 14), format);
     }
 
-    public void SetTree(GraphNode? root)
+    /// <summary>
+    /// Задать новое дерево. По умолчанию вид (зум/панорама) сохраняется, чтобы
+    /// анимация не «дёргала» картинку на каждом шаге; сброс — через <see cref="ResetView"/>.
+    /// </summary>
+    public void SetTree(GraphNode? root, bool resetView = false)
     {
         _root = root;
         _visible = int.MaxValue;
-        ResetView();
+        if (resetView) ResetView();
         Relayout();
         Invalidate();
     }
@@ -151,16 +155,20 @@ internal sealed class GraphPanel : Control
 
     public int VisibleCount => _visible;
 
+    /// <summary>Текущее дерево — для автотестов и диагностики.</summary>
+    internal GraphNode? Tree => _root;
+
     /// <summary>Показывать отвергнутые ветви полным поддеревом (вместе с предотвращёнными циклами).</summary>
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public bool FullTree { get; set; }
 
-    private void ResetView()
+    public void ResetView()
     {
         _zoom = 1f;
         _pan = PointF.Empty;
         _isPanning = false;
         _didPan = false;
+        Invalidate();
     }
 
     // ------------------------------------------------------------ раскладка ---
@@ -178,6 +186,8 @@ internal sealed class GraphPanel : Control
             node.W = node.Rejected && !FullTree ? ChipW : MainW;
             node.H = node.Rejected && !FullTree ? ChipH : MainH;
         }
+
+        AssignDepth(_root);
 
         var order = PostOrder(_root, FullTree);
         var leaf = 0;
@@ -214,7 +224,20 @@ internal sealed class GraphPanel : Control
 
         if (FullTree) return;
 
-        // компактный режим: отвергнутые ветви — чипами сбоку от узла
+        // компактный режим: отвергнутые ветви — чипами сбоку от узла.
+        // Чипы ставим за последним узлом своей строки, иначе они наезжают
+        // на соседние узлы того же слоя.
+        var rowRight = new Dictionary<int, int>();
+        var chipCursor = new Dictionary<int, int>();
+
+        foreach (var node in AllNodes(_root).Where(n => !n.Rejected))
+        {
+            var right = node.X + node.W;
+
+            if (!rowRight.TryGetValue(node.Depth, out var current) || right > current)
+                rowRight[node.Depth] = right;
+        }
+
         foreach (var node in AllNodes(_root).Where(n => !n.Rejected))
         {
             var chips = node.Children.Where(c => c.Rejected).ToList();
@@ -222,7 +245,12 @@ internal sealed class GraphPanel : Control
 
             var totalHeight = chips.Count * ChipH + (chips.Count - 1) * ChipGapY;
             var y = node.Y + (node.H - totalHeight) / 2;
-            var x = node.X + node.W + ChipOffsetX;
+
+            if (!chipCursor.TryGetValue(node.Depth, out var x))
+            {
+                x = rowRight[node.Depth] + ChipOffsetX;
+                chipCursor[node.Depth] = x;
+            }
 
             foreach (var chip in chips)
             {
@@ -233,6 +261,33 @@ internal sealed class GraphPanel : Control
                 _edges.Add((node, chip, true));
                 _contentWidth = Math.Max(_contentWidth, chip.X + chip.W);
                 _contentHeight = Math.Max(_contentHeight, chip.Y + chip.H);
+            }
+
+            chipCursor[node.Depth] = x + ChipW + ChipOffsetX;
+        }
+    }
+
+    /// <summary>
+    /// Проставляет <see cref="GraphNode.Depth"/> сверху вниз: корень — 0, его дети — 1 и т. д.
+    /// Без этого все узлы получали Y = 0 и рисовались одной строкой друг поверх друга.
+    /// </summary>
+    private static void AssignDepth(GraphNode root)
+    {
+        var seen = new HashSet<GraphNode>(ReferenceEqualityComparer.Instance);
+        var queue = new Queue<GraphNode>();
+
+        root.Depth = 0;
+        seen.Add(root);
+        queue.Enqueue(root);
+
+        while (queue.Count > 0)
+        {
+            var node = queue.Dequeue();
+            foreach (var child in node.Children)
+            {
+                if (!seen.Add(child)) continue;
+                child.Depth = node.Depth + 1;
+                queue.Enqueue(child);
             }
         }
     }
@@ -343,7 +398,6 @@ internal sealed class GraphPanel : Control
         }
 
         g.ResetTransform();
-        DrawLegend(g);
 
         if (_hoverNode is not null)
         {
@@ -351,50 +405,9 @@ internal sealed class GraphPanel : Control
         }
     }
 
-    /// <summary>Легенда: «И» — посылки правила, «ИЛИ» — альтернативные правила, красный — цикл.</summary>
-    private void DrawLegend(Graphics g)
-    {
-        var lines = new (Color Color, bool Dashed, string Text)[]
-        {
-            (Theme.Green, false, "И — посылки выбранного правила"),
-            (Theme.Amber, true, "ИЛИ — альтернативные правила (отклонены)"),
-            (Theme.Red, true, "цикл предотвращён")
-        };
-
-        var height = 12 + lines.Length * 18;
-        var rect = new Rectangle(10, Height - height - 10, 318, height);
-
-        using (var path = RoundedRect(rect, 8))
-        using (var back = new SolidBrush(Color.FromArgb(226, 24, 29, 36)))
-        using (var border = new Pen(Theme.Border))
-        {
-            g.FillPath(back, path);
-            g.DrawPath(border, path);
-        }
-
-        var y = rect.Y + 9;
-        foreach (var (color, dashed, text) in lines)
-        {
-            using var pen = new Pen(color, 2f);
-            if (dashed)
-            {
-                pen.DashStyle = DashStyle.Custom;
-                pen.DashPattern = new[] { 3f, 2.5f };
-            }
-
-            g.DrawLine(pen, rect.X + 10, y + 6, rect.X + 30, y + 6);
-
-            TextRenderer.DrawText(g, text, Theme.UiSmall,
-                new Rectangle(rect.X + 38, y - 2, rect.Width - 46, 18), Theme.TextMuted,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
-
-            y += 18;
-        }
-    }
-
     private void DrawEmpty(Graphics g)
     {
-        const string text = "Дерево вывода появится здесь.\nЗагрузите базу, нажмите «Прямой вывод» или выберите цель справа.";
+        const string text = "Дерево вывода появится здесь.";
         var rect = new RectangleF(20, Height / 2f - 30, Width - 40, 60);
         TextRenderer.DrawText(g, text, Theme.Ui, Rectangle.Round(rect), Theme.TextMuted,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);

@@ -5,32 +5,49 @@ namespace ProdModel.App;
 
 internal sealed class MainForm : Form
 {
-    private enum Mode { Forward, Backward }
-    private enum AnimMode { None, Forward, Backward }
+    private enum Mode { Forward, Backward, Clips }
 
     private Mode _mode = Mode.Forward;
     private KnowledgeBase? _kb;
     private string? _kbPath;
     private ForwardResult? _forward;
-    private BuildPlan? _plan;
-    private KnowledgeBase? _kbBase;
-    private readonly List<string> _enemies = new();
-    private readonly Dictionary<string, double> _enemyCf = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<BackwardResult> _backward = new();
-    private readonly Dictionary<string, DataGridViewRow> _factRows = new(StringComparer.OrdinalIgnoreCase);
 
     private int _step;
-    private int _reveal;
-    private int _revealMax;
-    private AnimMode _anim;
-    private bool _bulk;
-    private bool _suppress;
-    private Fact? _currentFact;
-    private BackwardResult? _currentBackward;
-    private HashSet<string>? _relevantFacts;
+    private int _fwdReveal;
+    private int _bwdReveal;
 
-    private ReverseResult? _reverseResult;
-    private CancellationTokenSource? _reverseCts;
+    /// <summary>Сколько шагов раскрыто в текущем режиме. У каждого режима свой счётчик.</summary>
+    private int _reveal
+    {
+        get => _mode == Mode.Forward ? _fwdReveal : _bwdReveal;
+        set
+        {
+            if (_mode == Mode.Forward) _fwdReveal = value;
+            else _bwdReveal = value;
+        }
+    }
+
+    /// <summary>Режим CLIPS: своя панель вместо графа и своя строка кнопок.</summary>
+    private readonly ClipsModePanel _clips = new();
+    private readonly Panel _clipsControls = new();
+
+    // Левая панель и основная область прячутся в режиме CLIPS — им нужны поля.
+    private Panel? _side;
+    private Panel? _main;
+    private SplitContainer? _split;
+    private bool _animRunning;
+    private Mode _animMode;
+    private bool _suppress;
+    private bool _refreshing;
+    private bool _suppressResultSelect;
+    private Fact? _focusFact;
+    private BackwardResult? _currentBackward;
+
+    // Обратный вывод раскрывается по узлам: один шаг = один узел дерева доказательства.
+    private readonly List<(BackwardResult Result, SearchNode Node)> _bwdSteps = new();
+    private readonly Dictionary<SearchNode, int> _bwdOrder = new();
+    private readonly List<int> _bwdStarts = new();
 
     private readonly System.Windows.Forms.Timer _timer = new();
 
@@ -39,8 +56,6 @@ internal sealed class MainForm : Form
 
     // --- общие ---
     private readonly Button _btnOpen = MakeButton("Открыть БЗ…");
-    private readonly Button _btnComposition = MakeButton("Состав…");
-    private readonly Button _btnItemTargets = MakeButton("Предмет → враги");
     private readonly Button _btnReset = MakeButton("Сброс");
 
     // --- прямой режим ---
@@ -48,41 +63,17 @@ internal sealed class MainForm : Form
     private readonly Button _btnFwdStep = MakeButton("⏭ Шаг");
     private readonly Button _btnFwdShow = MakeButton("⏩ Всё сразу");
     private readonly ComboBox _cmbFwdGoal = new();
-    private readonly CheckBox _chkFwdHide = new()
-    {
-        Text = "Скрыть лишнее",
-        AutoSize = true,
-        FlatStyle = FlatStyle.Flat,
-        ForeColor = Theme.TextMuted,
-        BackColor = Color.Transparent,
-        Font = Theme.Ui,
-        Margin = new Padding(4, 8, 12, 4),
-        Cursor = Cursors.Hand
-    };
 
     // --- обратный режим ---
     private readonly Button _btnBwdPlay = MakeButton("▶ Играть");
     private readonly Button _btnBwdStep = MakeButton("⏭ Шаг");
-    private readonly Button _btnBwdShow = MakeButton("⏩ Результат");
-    private readonly CheckBox _chkBwdHide = new()
-    {
-        Text = "Скрыть лишнее",
-        AutoSize = true,
-        FlatStyle = FlatStyle.Flat,
-        ForeColor = Theme.TextMuted,
-        BackColor = Color.Transparent,
-        Font = Theme.Ui,
-        Margin = new Padding(4, 8, 12, 4),
-        Cursor = Cursors.Hand
-    };
+    private readonly Button _btnBwdShow = MakeButton("⏩ Всё сразу");
 
-    private readonly ToolTip _tips = new() { InitialDelay = 400, AutoPopDelay = 12000 };
     private readonly ComboBox _cmbGoals = new();
     private readonly NumericUpDown _numSpeed = new();
+    private readonly Label _lblSpeed = new();
     private readonly Label _lblKb = new();
-    private readonly Label _lblAnswer = new();
-    private readonly Label _lblCenter = new();
-    private readonly Label _lblRight = new();
+    private SegmentBar? _tabs;
 
     private readonly Panel _forwardControls = new();
     private readonly Panel _backwardControls = new();
@@ -90,25 +81,26 @@ internal sealed class MainForm : Form
     private readonly DarkGrid _lstFacts = new();
     private readonly DarkGrid _lstRules = new();
     private readonly DarkGrid _lstResults = new();
-    private readonly DarkGrid _lstBuild = new();
     private readonly RichTextBox _txtExplain = new();
     private readonly GraphPanel _graph = new();
-    private readonly SegmentBar _segments = new();
+
+    // Вторая визуализация тех же данных: блоки по слоям вывода (как в режиме CLIPS).
+    private readonly BlockGraphPanel _blockGraph = new();
+    private readonly SegmentBar _graphViews = new();
+    private readonly SegmentBar _graphScope = new();
+
+    private string _baseExplanation = string.Empty;
 
     private readonly ToolStripStatusLabel _statusLeft = new();
     private readonly ToolStripStatusLabel _statusMid = new();
     private readonly ToolStripStatusLabel _statusRight = new();
 
-    private string[]? _startupArgs;
-
     public MainForm(string[]? args = null)
     {
-        _startupArgs = args;
         BuildUi();
         WireEvents();
 
         var start = FindDataFile(Path.Combine("data", "deadlock_kb.txt"));
-
         var kbArg = GetArg(args, "--kb");
         if (kbArg is not null)
         {
@@ -116,35 +108,8 @@ internal sealed class MainForm : Form
             if (resolved is not null) start = resolved;
         }
 
-        var inputArg = GetArg(args, "--input");
-        if (inputArg is not null)
-        {
-            var resolvedInput = ResolveKbPath(inputArg);
-            if (resolvedInput is not null)
-            {
-                var input = KbLoader.Load(resolvedInput);
-                _enemies.Clear();
-                _enemyCf.Clear();
-                foreach (var fact in input.FactsFor("enemy"))
-                {
-                    var name = fact.Atom.Args[0].Name;
-                    _enemies.Add(name);
-                    _enemyCf[name] = fact.Cf;
-                }
-            }
-        }
-
-        var enemiesArg = GetArg(args, "--enemies");
-        if (enemiesArg is not null)
-        {
-            _enemies.Clear();
-            _enemyCf.Clear();
-            _enemies.AddRange(enemiesArg.Split(new[] { ',', ';', ' ' },
-                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-        }
-
         if (start is not null) LoadKb(start);
-        else ShowExplanation("База знаний не загружена.\nНажмите «Открыть БЗ…» и выберите файл data/deadlock_kb.txt.");
+        else ShowExplanation("База знаний не загружена.");
     }
 
     // ================================================================ UI ===
@@ -153,17 +118,17 @@ internal sealed class MainForm : Form
     {
         SuspendLayout();
 
-        Text = "Продукционная модель · Deadlock: герои, предметы, контр-предметы";
+        Text = "Продукционная модель: прямой и обратный вывод";
         BackColor = Theme.Background;
         ForeColor = Theme.Text;
         Font = Theme.Ui;
-        Size = new Size(1600, 1000);
-        MinimumSize = new Size(1180, 720);
+        Size = new Size(1400, 900);
+        MinimumSize = new Size(1100, 680);
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
         KeyPreview = true;
 
-        var top = new Panel { Dock = DockStyle.Top, Height = 148, BackColor = Theme.Panel, Padding = new Padding(10, 6, 10, 4) };
+        var top = new Panel { Dock = DockStyle.Top, Height = 96, BackColor = Theme.Panel, Padding = new Padding(10, 6, 10, 4) };
 
         // -------- строка 1: режим + общие --------
         var row1 = new FlowLayoutPanel
@@ -177,9 +142,15 @@ internal sealed class MainForm : Form
 
         _modeBar.Add("Прямой вывод");
         _modeBar.Add("Обратный вывод");
-        _modeBar.Width = 248;
+        _modeBar.Add("CLIPS");
+        _modeBar.Width = _modeBar.PreferredWidth;
         _modeBar.Height = 32;
         _modeBar.Margin = new Padding(0, 4, 14, 4);
+
+        _lblSpeed.AutoSize = true;
+        _lblSpeed.ForeColor = Theme.TextMuted;
+        _lblSpeed.Text = "Скорость, мс:";
+        _lblSpeed.Margin = new Padding(0, 9, 4, 0);
 
         _numSpeed.Minimum = 20;
         _numSpeed.Maximum = 1500;
@@ -191,1822 +162,1580 @@ internal sealed class MainForm : Form
         _numSpeed.BorderStyle = BorderStyle.FixedSingle;
         _numSpeed.Margin = new Padding(0, 4, 12, 4);
 
+        _lblKb.AutoSize = true;
+        _lblKb.ForeColor = Theme.TextMuted;
+        _lblKb.Text = "БЗ не загружена";
+        _lblKb.Margin = new Padding(10, 9, 0, 0);
+
         row1.Controls.AddRange(new Control[]
         {
-            _modeBar,
-            _btnOpen,
-            _btnComposition,
-            _btnItemTargets,
-            _btnReset,
-            MakeLabel("Скорость:"),
-            _numSpeed
+            _modeBar, _btnOpen, _btnReset, _lblSpeed, _numSpeed, _lblKb
         });
 
-        // -------- строка 2: панель режима --------
+        // -------- строка 2: переключаемые панели управления --------
         BuildForwardControls();
         BuildBackwardControls();
 
-        // -------- строки 3–4: подписи --------
-        _lblKb.Dock = DockStyle.Top;
-        _lblKb.Height = 24;
-        _lblKb.ForeColor = Theme.TextMuted;
-        _lblKb.Font = Theme.UiSmall;
-        _lblKb.Text = "База не загружена";
-        _lblKb.Padding = new Padding(2, 4, 0, 0);
+        _forwardControls.Dock = DockStyle.Fill;
+        _backwardControls.Dock = DockStyle.Fill;
+        _backwardControls.Visible = false;
 
-        _lblAnswer.Dock = DockStyle.Top;
-        _lblAnswer.Height = 26;
-        _lblAnswer.ForeColor = Theme.Green;
-        _lblAnswer.Font = new Font(Theme.UiBold.FontFamily, 10f, FontStyle.Bold, GraphicsUnit.Point);
-        _lblAnswer.Text = "Контрпик: —";
-        _lblAnswer.Padding = new Padding(2, 4, 0, 0);
-        _lblAnswer.AutoEllipsis = true;
+        // Кнопки режима CLIPS живут в той же строке, что и кнопки выводов.
+        _clipsControls.Dock = DockStyle.Fill;
+        _clipsControls.Visible = false;
+        _clipsControls.Controls.Add(_clips.Toolbar);
 
-        top.Controls.Add(_lblAnswer);
-        top.Controls.Add(_lblKb);
-        top.Controls.Add(_backwardControls);
-        top.Controls.Add(_forwardControls);
+        var row2 = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Panel };
+        row2.Controls.Add(_clipsControls);
+        row2.Controls.Add(_backwardControls);
+        row2.Controls.Add(_forwardControls);
+
+        top.Controls.Add(row2);
         top.Controls.Add(row1);
 
-        var outer = new SplitContainer
+        // -------- основная область: граф + объяснение + таблицы --------
+        _graph.Dock = DockStyle.Fill;
+
+        // Над графом — переключатель вида: привычное дерево или блоки по слоям.
+        _graphViews.Add("Дерево");
+        _graphViews.Add("Слои");
+        _graphViews.Height = 30;
+        _graphViews.Width = _graphViews.PreferredWidth;
+        _graphViews.Margin = new Padding(0, 2, 10, 0);
+
+        _graphScope.Add("Доказательство");
+        _graphScope.Add("Все факты");
+        _graphScope.Height = 30;
+        _graphScope.Width = _graphScope.PreferredWidth;
+        _graphScope.Visible = false;
+        _graphScope.Margin = new Padding(0, 2, 0, 0);
+
+        var graphBar = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            Height = 36,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            BackColor = Theme.Background,
+            Padding = new Padding(2, 2, 2, 0)
+        };
+        graphBar.Controls.AddRange(new Control[] { _graphViews, _graphScope });
+
+        _blockGraph.Dock = DockStyle.Fill;
+        _blockGraph.Visible = false;
+
+        // Дерево и блоки делят одну область и показываются по очереди.
+        var graphHost = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Background };
+        graphHost.Controls.Add(_blockGraph);
+        graphHost.Controls.Add(_graph);
+        graphHost.Controls.Add(graphBar);
+
+        _txtExplain.Dock = DockStyle.Fill;
+        _txtExplain.ReadOnly = true;
+        _txtExplain.BackColor = Theme.PanelAlt;
+        _txtExplain.ForeColor = Theme.Text;
+        _txtExplain.BorderStyle = BorderStyle.None;
+        _txtExplain.Font = Theme.MonoSmall;
+        _txtExplain.WordWrap = true;
+
+        var right = new Panel { Dock = DockStyle.Fill, Padding = new Padding(6) };
+        right.Controls.Add(_txtExplain);
+
+        var split = new SplitContainer
         {
             Dock = DockStyle.Fill,
             Orientation = Orientation.Vertical,
-            SplitterWidth = 3,
-            BackColor = Theme.Border,
-            Panel1MinSize = 25,
-            Panel2MinSize = 25
+            SplitterWidth = 6,
+            BackColor = Theme.Background
         };
+        split.Panel1.Controls.Add(graphHost);
+        split.Panel2.Controls.Add(right);
+        _split = split;
 
-        var inner = new SplitContainer
+        ConfigureGrid(_lstFacts);
+        ConfigureGrid(_lstRules);
+        ConfigureGrid(_lstResults);
+
+        // -------- левая панель: переключатель таблиц + карточка --------
+        var sideTabs = new SegmentBar { Dock = DockStyle.Top, Height = 36, BackColor = Theme.Background };
+        sideTabs.Add("Факты");
+        sideTabs.Add("Правила");
+        sideTabs.Add("Результаты");
+        _tabs = sideTabs;
+
+        // Карточка с общей рамкой — та же геометрия, что и у остальных панелей.
+        var sideCard = new CardPanel
         {
             Dock = DockStyle.Fill,
-            Orientation = Orientation.Vertical,
-            SplitterWidth = 3,
-            BackColor = Theme.Border,
-            Panel1MinSize = 25,
-            Panel2MinSize = 25
+            CornerRadius = 8,
+            Padding = new Padding(6)
         };
+        sideCard.Controls.Add(_lstFacts);
+        sideCard.Controls.Add(_lstRules);
+        sideCard.Controls.Add(_lstResults);
 
-        outer.Panel2.Controls.Add(inner);
-        outer.Panel2.BackColor = Theme.Background;
-        outer.Panel1.BackColor = Theme.Background;
-        inner.Panel1.BackColor = Theme.Background;
-        inner.Panel2.BackColor = Theme.Background;
-
-        BuildLeft(outer.Panel1);
-        BuildCenter(inner.Panel1);
-        BuildRight(inner.Panel2);
-
-        var status = new StatusStrip
+        var side = new Panel
         {
-            BackColor = Theme.Panel,
-            ForeColor = Theme.TextMuted,
-            SizingGrip = false,
-            Font = Theme.UiSmall
+            Dock = DockStyle.Left,
+            Width = 440,
+            BackColor = Theme.Background,
+            Padding = new Padding(6, 0, 6, 6)
         };
+        side.Controls.Add(sideCard);
+        side.Controls.Add(sideTabs);
+        _side = side;
+
+        sideTabs.SelectedIndexChanged += (_, _) => ShowSideTable(sideTabs.SelectedIndex);
+        ShowSideTable(0);
+
+        // Граф и режим CLIPS делят одну и ту же область и показываются по очереди.
+        _clips.Visible = false;
+        _main = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Background };
+        _main.Controls.Add(_clips);
+        _main.Controls.Add(split);
+
+        var status = new StatusStrip { BackColor = Theme.Panel, ForeColor = Theme.TextMuted, SizingGrip = false };
+        _statusLeft.Spring = false;
         _statusLeft.Text = "Готово";
-        _statusLeft.ForeColor = Theme.TextMuted;
         _statusMid.Spring = true;
         _statusMid.TextAlign = ContentAlignment.MiddleLeft;
-        _statusMid.ForeColor = Theme.TextMuted;
-        _statusRight.ForeColor = Theme.TextMuted;
+        _statusRight.Spring = false;
         status.Items.AddRange(new ToolStripItem[] { _statusLeft, _statusMid, _statusRight });
 
-        Controls.Add(outer);
+        Controls.Add(_main);
+        Controls.Add(side);
         Controls.Add(top);
         Controls.Add(status);
 
-        Shown += (_, _) =>
-        {
-            try
-            {
-                outer.Panel1MinSize = 330;
-                outer.Panel2MinSize = 520;
-                inner.Panel1MinSize = 380;
-                inner.Panel2MinSize = 330;
+        ResumeLayout(false);
+        PerformLayout();
 
-                outer.SplitterDistance = 410;
-                inner.SplitterDistance = Math.Max(430, inner.Width - 430);
+        // Пропорции графа и объяснения — при показе формы: до раскладки реальная ширина неизвестна.
+        Load += (_, _) => ApplySplitRatio(split);
+    }
 
-                ApplyStartupArgs();
-            }
-            catch (InvalidOperationException) { /* размеры ещё не стабилизировались */ }
-        };
+    /// <summary>Граф — 62% ширины, объяснение — остальное.</summary>
+    private static void ApplySplitRatio(SplitContainer split)
+    {
+        var limit = split.Width - split.Panel2MinSize - split.SplitterWidth;
 
-        ResumeLayout(true);
+        if (limit <= split.Panel1MinSize)
+            return;
+
+        split.SplitterDistance = Math.Clamp((int)(split.Width * 0.62), split.Panel1MinSize, limit);
     }
 
     private void BuildForwardControls()
     {
-        _forwardControls.Dock = DockStyle.Top;
-        _forwardControls.Height = 38;
-        _forwardControls.BackColor = Theme.Panel;
-
-        var flow = new FlowLayoutPanel
+        var row = new FlowLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
+            Height = 40,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
-            BackColor = Theme.Panel
+            BackColor = Theme.Panel,
+            Padding = new Padding(0, 4, 0, 0)
         };
 
-        _cmbFwdGoal.Width = 280;
         _cmbFwdGoal.DropDownStyle = ComboBoxStyle.DropDownList;
         _cmbFwdGoal.FlatStyle = FlatStyle.Flat;
         _cmbFwdGoal.BackColor = Theme.PanelAlt;
         _cmbFwdGoal.ForeColor = Theme.Text;
         _cmbFwdGoal.Font = Theme.Ui;
-        _cmbFwdGoal.Margin = new Padding(0, 4, 12, 4);
-        _cmbFwdGoal.Items.Add("(без цели)");
-        _cmbFwdGoal.SelectedIndex = 0;
+        _cmbFwdGoal.Width = 320;
+        _cmbFwdGoal.Margin = new Padding(6, 4, 12, 4);
 
-        _tips.SetToolTip(_btnFwdPlay, "Запустить/приостановить пошаговую анимацию прямого вывода (F5).");
-        _tips.SetToolTip(_btnFwdStep, "Один шаг прямого вывода (F6).");
-        _tips.SetToolTip(_btnFwdShow, "Показать сразу весь результат прямого вывода.");
-        _tips.SetToolTip(_chkFwdHide,
-            "Скрыть промежуточные факты — оставить только входные и итоговые (recommended / pick / second_pick).");
-        _tips.SetToolTip(_cmbFwdGoal,
-            "Цель: остановить прямой вывод, как только в памяти появится факт с этим образцом.\n" +
-            "«(без цели)» — вывод до неподвижной точки.\n" +
-            "Внимание: сборка предметов будет построена по частичной памяти.");
-
-        flow.Controls.AddRange(new Control[]
-        {
-            _btnFwdPlay, _btnFwdStep, _btnFwdShow, _chkFwdHide,
-            MakeLabel("Цель:"), _cmbFwdGoal
-        });
-
-        _forwardControls.Controls.Add(flow);
+        row.Controls.AddRange(new Control[] { _btnFwdPlay, _btnFwdStep, _btnFwdShow, _cmbFwdGoal });
+        _forwardControls.Controls.Add(row);
     }
 
     private void BuildBackwardControls()
     {
-        _backwardControls.Dock = DockStyle.Top;
-        _backwardControls.Height = 38;
-        _backwardControls.BackColor = Theme.Panel;
-        _backwardControls.Visible = false;
-
-        var flow = new FlowLayoutPanel
+        var row = new FlowLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
+            Height = 40,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
-            BackColor = Theme.Panel
+            BackColor = Theme.Panel,
+            Padding = new Padding(0, 4, 0, 0)
         };
 
-        _cmbGoals.Width = 330;
         _cmbGoals.DropDownStyle = ComboBoxStyle.DropDownList;
         _cmbGoals.FlatStyle = FlatStyle.Flat;
         _cmbGoals.BackColor = Theme.PanelAlt;
         _cmbGoals.ForeColor = Theme.Text;
         _cmbGoals.Font = Theme.Ui;
-        _cmbGoals.Margin = new Padding(0, 4, 12, 4);
+        _cmbGoals.Width = 320;
+        _cmbGoals.Margin = new Padding(6, 4, 12, 4);
 
-        _tips.SetToolTip(_btnBwdPlay, "Запустить/приостановить пошаговое раскрытие дерева доказательства.");
-        _tips.SetToolTip(_btnBwdStep, "Показать один следующий узел дерева.");
-        _tips.SetToolTip(_btnBwdShow, "Показать дерево целиком, без анимации.");
-        _tips.SetToolTip(_chkBwdHide,
-            "Свернуть отвергнутые ветви в компактные чипы.\n" +
-            "Снимите галочку, чтобы увидеть полные поддеревья отвергнутых попыток (включая предотвращённые циклы).");
+        row.Controls.AddRange(new Control[] { _btnBwdPlay, _btnBwdStep, _btnBwdShow, _cmbGoals });
+        _backwardControls.Controls.Add(row);
+    }
 
-        flow.Controls.AddRange(new Control[]
+    private void ConfigureGrid(DarkGrid grid)
+    {
+        grid.Dock = DockStyle.Fill;
+        grid.ReadOnly = true;
+        grid.AllowUserToAddRows = false;
+        grid.AllowUserToDeleteRows = false;
+        grid.AllowUserToResizeRows = false;
+        grid.RowHeadersVisible = false;
+        grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+        grid.MultiSelect = false;
+        grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+        grid.BackgroundColor = Theme.PanelAlt;
+        grid.DefaultCellStyle.BackColor = Theme.PanelAlt;
+        grid.DefaultCellStyle.ForeColor = Theme.Text;
+        grid.DefaultCellStyle.SelectionBackColor = Theme.AccentDim;
+        grid.DefaultCellStyle.SelectionForeColor = Theme.Text;
+        grid.GridColor = Theme.Border;
+        grid.EnableHeadersVisualStyles = false;
+        grid.ColumnHeadersDefaultCellStyle.BackColor = Theme.Panel;
+        grid.ColumnHeadersDefaultCellStyle.ForeColor = Theme.TextMuted;
+        grid.ColumnHeadersDefaultCellStyle.Font = Theme.UiSmall;
+
+        // Столбцы создаются здесь, до добавления строк.
+        if (ReferenceEquals(grid, _lstFacts))
         {
-            _btnBwdPlay, _btnBwdStep, _btnBwdShow, _chkBwdHide,
-            MakeLabel("Цель:"), _cmbGoals
-        });
-
-        _backwardControls.Controls.Add(flow);
-    }
-
-    private void BuildLeft(Control host)
-    {
-        _segments.Add("Факты");
-        _segments.Add("Правила");
-        _segments.Add("Результаты");
-        _segments.Add("Сборка");
-        _segments.Dock = DockStyle.Top;
-        _segments.Height = 40;
-
-        _lstFacts.AddColumn("Факт", 42);
-        _lstFacts.AddColumn("cf", 10);
-        _lstFacts.AddColumn("Слой", 13);
-        _lstFacts.AddColumn("Источник", 35);
-
-        _lstRules.AddColumn("Правило", 44);
-        _lstRules.AddColumn("cf", 10);
-        _lstRules.AddColumn("Заключение", 46);
-
-        _lstResults.AddColumn("Цель", 66);
-        _lstResults.AddColumn("cf", 16);
-        _lstResults.AddColumn("Слои", 18);
-
-        _lstBuild.AddColumn("Предмет", 38);
-        _lstBuild.AddColumn("Слот", 20);
-        _lstBuild.AddColumn("cf", 14);
-        _lstBuild.AddColumn("Потребность", 38);
-
-        _lstRules.Visible = false;
-        _lstResults.Visible = false;
-        _lstBuild.Visible = false;
-
-        var card = new CardPanel
+            grid.Columns.Clear();
+            grid.AddColumn("Факт", 75);
+            grid.AddColumn("Источник", 25);
+        }
+        else if (ReferenceEquals(grid, _lstRules))
         {
-            Dock = DockStyle.Fill,
-            Padding = new Padding(8, 8, 8, 8)
-        };
-
-        card.Controls.Add(_lstFacts);
-        card.Controls.Add(_lstRules);
-        card.Controls.Add(_lstResults);
-        card.Controls.Add(_lstBuild);
-        card.Controls.Add(_segments);
-
-        host.Controls.Add(card);
+            grid.Columns.Clear();
+            grid.AddColumn("Правило", 12);
+            grid.AddColumn("Условия", 44);
+            grid.AddColumn("Заключения", 44);
+        }
+        else if (ReferenceEquals(grid, _lstResults))
+        {
+            grid.Columns.Clear();
+            grid.AddColumn("Цель", 40);
+            grid.AddColumn("Результат", 24);
+            grid.AddColumn("Узлов", 12);
+            grid.AddColumn("Циклов", 12);
+            grid.AddColumn("Переключений", 12);
+        }
     }
 
-    private void BuildCenter(Control host)
+    /// <summary>Показывает в левой карточке одну из таблиц: 0 — факты, 1 — правила, 2 — результаты.</summary>
+    private void ShowSideTable(int index)
     {
-        _lblCenter.Dock = DockStyle.Top;
-        _lblCenter.Height = 28;
-        _lblCenter.Font = Theme.UiBold;
-        _lblCenter.ForeColor = Theme.Text;
-        _lblCenter.TextAlign = ContentAlignment.MiddleLeft;
-        _lblCenter.Padding = new Padding(10, 0, 0, 0);
-        _lblCenter.BackColor = Theme.Panel;
-        _lblCenter.Text = "Дерево вывода";
-        _lblCenter.AutoEllipsis = true;
-
-        _graph.Dock = DockStyle.Fill;
-
-        var card = new CardPanel { Dock = DockStyle.Fill, Padding = new Padding(8) };
-        card.Controls.Add(_graph);
-        card.Controls.Add(_lblCenter);
-
-        host.Controls.Add(card);
+        _lstFacts.Visible = index == 0;
+        _lstRules.Visible = index == 1;
+        _lstResults.Visible = index == 2;
     }
 
-    private void BuildRight(Control host)
-    {
-        _lblRight.Dock = DockStyle.Top;
-        _lblRight.Height = 28;
-        _lblRight.Font = Theme.UiBold;
-        _lblRight.ForeColor = Theme.Text;
-        _lblRight.TextAlign = ContentAlignment.MiddleLeft;
-        _lblRight.Padding = new Padding(10, 0, 0, 0);
-        _lblRight.BackColor = Theme.Panel;
-        _lblRight.Text = "Объяснение";
-
-        _txtExplain.Dock = DockStyle.Fill;
-        _txtExplain.BackColor = Theme.Background;
-        _txtExplain.ForeColor = Theme.Text;
-        _txtExplain.Font = Theme.Mono;
-        _txtExplain.BorderStyle = BorderStyle.None;
-        _txtExplain.ReadOnly = true;
-        _txtExplain.WordWrap = true;
-        _txtExplain.ScrollBars = RichTextBoxScrollBars.Vertical;
-        _txtExplain.DetectUrls = false;
-
-        var card = new CardPanel { Dock = DockStyle.Fill, Padding = new Padding(8) };
-        card.Controls.Add(_txtExplain);
-        card.Controls.Add(_lblRight);
-
-        host.Controls.Add(card);
-    }
-
-    // ========================================================== события ===
+    // ================================================================ Events ===
 
     private void WireEvents()
     {
-        _modeBar.SelectedIndexChanged += (_, _) => SwitchMode(_modeBar.SelectedIndex == 0 ? Mode.Forward : Mode.Backward);
-
         _btnOpen.Click += (_, _) => OpenKbDialog();
-        _btnComposition.Click += (_, _) => ChooseComposition();
-        _btnItemTargets.Click += (_, _) => ChooseItemAndShowTargets();
-        _btnReset.Click += (_, _) => { if (_kbPath is not null) LoadKb(_kbPath); };
+        _btnReset.Click += (_, _) => ResetAll();
 
-        // прямой режим
-        _btnFwdPlay.Click += (_, _) => ForwardPlay();
-        _btnFwdStep.Click += (_, _) => ForwardStep(manual: true);
-        _btnFwdShow.Click += (_, _) => ForwardShowResult();
-        _chkFwdHide.CheckedChanged += (_, _) => { _relevantFacts = null; if (_forward is not null) RefreshFactList(); };
-        _cmbFwdGoal.SelectedIndexChanged += (_, _) =>
+        _modeBar.SelectedIndexChanged += (_, _) =>
         {
-            if (_suppress) return;
-            StopAnimation();
-            _forward = null;
-            _plan = null;
-            _relevantFacts = null;
-            _factRows.Clear();
-            _lstFacts.Rows.Clear();
-            _lstBuild.Rows.Clear();
-            _graph.SetTree(null);
-            _lblCenter.Text = "Цель изменена: нажмите «▶ Играть» для пересчёта";
-            ShowExplanation("Цель прямого вывода изменена. Нажмите «▶ Играть», «⏭ Шаг» или «⏩ Всё сразу».");
-        };
+            // Анимация идёт по шагам одного режима — при переключении её надо снять,
+            // иначе таймер продолжит раскрывать шаги уже другого режима.
+            PauseAnimation();
 
-        // обратный режим
-        _btnBwdPlay.Click += (_, _) => BackwardPlay();
-        _btnBwdStep.Click += (_, _) => BackwardStep(manual: true);
-        _btnBwdShow.Click += (_, _) => BackwardShowResult();
-        _chkBwdHide.CheckedChanged += (_, _) => { if (_currentBackward is not null) ShowBackward(_currentBackward, animate: false, revealAll: true); };
-        _cmbGoals.SelectedIndexChanged += (_, _) =>
-        {
-            if (_suppress) return;
-            _currentBackward = null;
-            _backward.Clear();
-            _lstResults.Rows.Clear();
-            _graph.SetTree(null);
-            _lblCenter.Text = "Обратный вывод: выберите цель и нажмите «Играть»";
-            ShowExplanation("Цель выбрана. Нажмите «▶ Играть», «⏭ Шаг» или «⏩ Результат».");
-        };
-
-        _timer.Tick += (_, _) => OnTick();
-
-        _lstFacts.SelectionChanged += (_, _) => ShowSelectedFact();
-        _lstRules.SelectionChanged += (_, _) => ShowSelectedRule();
-        _lstResults.SelectionChanged += (_, _) => ShowSelectedResult();
-        _lstBuild.SelectionChanged += (_, _) => ShowPlan();
-        _segments.SelectedIndexChanged += (_, _) => ShowSegment();
-
-        _graph.NodeClicked += node =>
-        {
-            if (_reverseResult is not null)
+            _mode = _modeBar.SelectedIndex switch
             {
-                var heroVerdict = _reverseResult.Heroes
-                    .FirstOrDefault(h => h.Hero.Equals(node.Text, StringComparison.OrdinalIgnoreCase));
-                if (heroVerdict?.Proof is not null)
-                {
-                    ShowBackward(heroVerdict.Proof, animate: false, revealAll: true);
-                    return;
-                }
-            }
-
-            if (_factRows.TryGetValue(node.Text, out var row))
-            {
-                row.Selected = true;
-                _lstFacts.CurrentCell = row.Cells[0];
-                _lstFacts.FirstDisplayedScrollingRowIndex = Math.Max(0, row.Index - 3);
-            }
-        };
-
-        KeyDown += (_, e) =>
-        {
-            if (e.KeyCode == Keys.F5) { if (_mode == Mode.Forward) ForwardPlay(); else BackwardPlay(); }
-            if (e.KeyCode == Keys.F6) { if (_mode == Mode.Forward) ForwardStep(manual: true); else BackwardStep(manual: true); }
-        };
-    }
-
-    private void SwitchMode(Mode mode)
-    {
-        if (_mode == mode) return;
-        _mode = mode;
-        StopAnimation();
-
-        _forwardControls.Visible = mode == Mode.Forward;
-        _backwardControls.Visible = mode == Mode.Backward;
-
-        if (mode == Mode.Forward && _segments.SelectedIndex == 2) _segments.SelectedIndex = 0;
-        if (mode == Mode.Backward && _segments.SelectedIndex == 0 && _backward.Count > 0) _segments.SelectedIndex = 2;
-
-        UpdateAnswer();
-        UpdateStatus();
-
-        if (mode == Mode.Forward && _lblCenter.Text.Length == 0)
-            _lblCenter.Text = "Прямой вывод";
-    }
-
-    private void ApplyStartupArgs()
-    {
-        if (_startupArgs is null || _startupArgs.Length == 0) return;
-
-        var segment = GetArg(_startupArgs, "--segment");
-        if (segment is not null)
-        {
-            var index = segment.ToLowerInvariant() switch
-            {
-                "facts" => 0,
-                "rules" => 1,
-                "results" => 2,
-                "build" => 3,
-                _ => -1
+                0 => Mode.Forward,
+                1 => Mode.Backward,
+                _ => Mode.Clips
             };
-            if (index >= 0) { _segments.SelectedIndex = index; ShowSegment(); }
-        }
 
-        if (_startupArgs.Contains("--full", StringComparer.OrdinalIgnoreCase)) _chkBwdHide.Checked = false;
-        if (_startupArgs.Contains("--hero-counter", StringComparer.OrdinalIgnoreCase)) { /* не используется */ }
+            var clips = _mode == Mode.Clips;
+            _forwardControls.Visible = _mode == Mode.Forward;
+            _backwardControls.Visible = _mode == Mode.Backward;
+            _clipsControls.Visible = clips;
 
-        var goalArg = GetArg(_startupArgs, "--goal");
-        if (goalArg is not null)
-        {
-            if (int.TryParse(goalArg, out var index) && index >= 0 && index < _cmbGoals.Items.Count)
-                _cmbGoals.SelectedIndex = index;
-            else if (ParseGoalArg(goalArg) is { } goal)
+            // В режиме CLIPS база знаний, граф и скорость анимации не нужны.
+            if (_side is not null) _side.Visible = !clips;
+            if (_split is not null) _split.Visible = !clips;
+            _clips.Visible = clips;
+            _btnOpen.Enabled = !clips;
+            _btnReset.Enabled = !clips;
+            _lblSpeed.Visible = !clips;
+            _numSpeed.Visible = !clips;
+
+            UpdatePlayButtons();
+            UpdateStatus();
+            UpdateGraphScopeLabels();
+
+            if (clips)
             {
-                _cmbGoals.Items.Add(goal);
-                _cmbGoals.SelectedIndex = _cmbGoals.Items.Count - 1;
+                _clips.EnsureReady();
+                UpdateKbLabel();
+                return;
             }
-        }
 
-        if (_startupArgs.Contains("--forward", StringComparer.OrdinalIgnoreCase))
+            UpdateKbLabel();
+
+            // При переключении режима сразу показываем дерево этого режима,
+            // иначе на панели остаётся граф предыдущего.
+            if (_mode == Mode.Forward)
+            {
+                BuildForwardGraph();
+            }
+            else
+            {
+                BuildBackwardGraph();
+            }
+        };
+
+        _btnFwdPlay.Click += (_, _) => ToggleForward();
+        _btnFwdStep.Click += (_, _) => StepForward();
+        _btnFwdShow.Click += (_, _) => ShowAllForward();
+
+        _btnBwdPlay.Click += (_, _) => ToggleBackward();
+        _btnBwdStep.Click += (_, _) => StepBackward();
+        _btnBwdShow.Click += (_, _) => ShowAllBackward();
+
+        _cmbFwdGoal.SelectedIndexChanged += (_, _) => { if (!_suppress) OnForwardGoalChanged(); };
+        _cmbGoals.SelectedIndexChanged += (_, _) => { if (!_suppress) OnBackwardGoalChanged(); };
+
+        _graph.NodeClicked += OnNodeClicked;
+
+        // Дерево ↔ блоки: обе панели живут в одной области, показываем одну.
+        _graphViews.SelectedIndexChanged += (_, _) =>
         {
-            _modeBar.SelectedIndex = 0;
-            ForwardShowResult();
-        }
+            var blocks = _graphViews.SelectedIndex == 1;
+            _graph.Visible = !blocks;
+            _blockGraph.Visible = blocks;
+            _graphScope.Visible = blocks;
+            RefreshGraphView();
+        };
 
-        if (_startupArgs.Contains("--backward", StringComparer.OrdinalIgnoreCase))
+        _graphScope.SelectedIndexChanged += (_, _) =>
         {
-            _modeBar.SelectedIndex = 1;
-            BackwardShowResult();
-        }
+            if (_suppress || !_blockGraph.Visible) return;
+            RefreshGraphView();
+        };
+
+        _clips.StatusChanged += (_, _) => { UpdateKbLabel(); UpdateStatus(); };
+
+        _timer.Interval = (int)_numSpeed.Value;
+        _numSpeed.ValueChanged += (_, _) => _timer.Interval = (int)_numSpeed.Value;
+        _timer.Tick += (_, _) => OnTimerTick();
+
+        _lstFacts.SelectionChanged += (_, _) => OnFactSelected();
+        _lstResults.SelectionChanged += (_, _) => OnBackwardSelected();
+        _lstResults.MouseDown += (_, _) => _suppressResultSelect = false;
+        _lstResults.KeyDown += (_, _) => _suppressResultSelect = false;
+
+        FormClosing += (_, _) => _timer.Stop();
     }
-
-    private static GoalDefinition? ParseGoalArg(string text)
-    {
-        var trimmed = text.Trim();
-        if (trimmed.Length == 0) return null;
-        var open = trimmed.IndexOf('(');
-        if (open < 0) return new GoalDefinition { Pattern = new Predicate(trimmed, Array.Empty<Arg>()) };
-
-        var name = trimmed[..open].Trim();
-        if (name.Length == 0) return null;
-
-        var inner = trimmed[(open + 1)..].TrimEnd(')');
-        var args = inner
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(a => a.StartsWith('?') ? Arg.Var(a[1..]) : Arg.Const(a))
-            .ToArray();
-
-        return new GoalDefinition { Pattern = new Predicate(name, args) };
-    }
-
-    private static string? GetArg(string[]? args, string name)
-    {
-        if (args is null) return null;
-        for (var i = 0; i < args.Length - 1; i++)
-            if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase)) return args[i + 1];
-        return null;
-    }
-
-    private static string? ResolveKbPath(string path)
-    {
-        if (File.Exists(path)) return Path.GetFullPath(path);
-        var found = FindDataFile(path);
-        if (found is not null) return found;
-        return FindDataFile(path.Replace('/', '\\').TrimStart('\\'));
-    }
-
-    // ======================================================= загрузка БЗ ===
 
     private void OpenKbDialog()
     {
-        using var dialog = new OpenFileDialog
+        using var dlg = new OpenFileDialog
         {
-            Filter = "База знаний (*.txt)|*.txt|Все файлы (*.*)|*.*",
-            Title = "Открыть базу знаний или сценарий",
-            InitialDirectory = _kbPath is not null
-                ? Path.GetDirectoryName(_kbPath)
-                : FindDataFile("data") ?? AppContext.BaseDirectory
+            Title = "Выберите файл базы знаний",
+            Filter = "Файлы БЗ (*.txt;*.kb)|*.txt;*.kb|Все файлы (*.*)|*.*",
+            CheckFileExists = true
         };
-        if (dialog.ShowDialog(this) == DialogResult.OK) LoadKb(dialog.FileName);
+        if (dlg.ShowDialog(this) == DialogResult.OK) LoadKb(dlg.FileName);
     }
 
     private void LoadKb(string path)
     {
         try
         {
-            _kbBase = KbLoader.Load(path);
-            _kbPath = path;
+            var kb = KbLoader.Load(path);
+            _kb = kb;
+            _kbPath = Path.GetFullPath(path);
+
+            UpdateKbLabel();
+            _statusLeft.Text = "БЗ загружена";
+
+            ResetAll();
+
+            _suppress = true;
+            try
+            {
+                _cmbFwdGoal.Items.Clear();
+                _cmbFwdGoal.Items.Add("(любая)");
+
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var goal in kb.Goals)
+                    if (seen.Add(goal.ToString())) _cmbFwdGoal.Items.Add(goal.ToString());
+                foreach (var rule in kb.Rules)
+                    foreach (var conclusion in rule.Conclusions)
+                        if (seen.Add(conclusion.ToString())) _cmbFwdGoal.Items.Add(conclusion.ToString());
+
+                _cmbFwdGoal.SelectedIndex = 0;
+
+                _cmbGoals.Items.Clear();
+                _cmbGoals.Items.Add("(все цели)");
+                foreach (var goal in kb.Goals) _cmbGoals.Items.Add(goal.ToString());
+                if (_cmbGoals.Items.Count > 0) _cmbGoals.SelectedIndex = 0;
+            }
+            finally
+            {
+                _suppress = false;
+            }
+
+            _txtExplain.Text = BuildKbSummary(kb);
+            RefreshForwardView();
+            UpdateStatus();
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, ex.Message, "Ошибка загрузки базы знаний", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
+            MessageBox.Show(this, ex.Message, "Ошибка загрузки БЗ",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
-
-        if (_enemies.Count == 0) _enemies.AddRange(DefaultComposition(_kbBase));
-        ApplyComposition();
     }
 
-    private void ApplyComposition()
+    private void ResetAll()
     {
-        if (_kbBase is null) return;
-
-        var known = _kbBase.GetSort("hero")?.Values;
-        if (known is { Count: > 0 })
-            _enemies.RemoveAll(e => !known.Contains(e, StringComparer.OrdinalIgnoreCase));
-
-        if (_enemies.Count > 6) _enemies.RemoveRange(6, _enemies.Count - 6);
-        _enemies.Sort(StringComparer.OrdinalIgnoreCase);
-
-        _kb = _kbBase.WithEnemies(_enemies.Select(name =>
-            (Name: name, Cf: _enemyCf.TryGetValue(name, out var cf) ? cf : 0.9)));
-
-        StopAnimation();
-        _reverseResult = null;
-        _currentBackward = null;
-        _currentFact = null;
-        _relevantFacts = null;
+        PauseAnimation();
+        _step = 0;
+        _fwdReveal = 0;
+        _bwdReveal = 0;
         _forward = null;
-        _plan = null;
         _backward.Clear();
-        _step = 0;
-        _reveal = 0;
-        _revealMax = 0;
-        _factRows.Clear();
-        _lstFacts.Rows.Clear();
-        _lstRules.Rows.Clear();
-        _lstResults.Rows.Clear();
-        _lstBuild.Rows.Clear();
-        _graph.SetTree(null);
-
-        _suppress = true;
-
-        _cmbGoals.Items.Clear();
-        foreach (var goal in _kb.Goals) _cmbGoals.Items.Add(goal);
-        if (_cmbGoals.Items.Count > 0) _cmbGoals.SelectedIndex = 0;
-
-        _cmbFwdGoal.Items.Clear();
-        _cmbFwdGoal.Items.Add("(без цели)");
-        foreach (var goal in _kb.Goals) _cmbFwdGoal.Items.Add(goal);
-        _cmbFwdGoal.SelectedIndex = 0;
-
-        foreach (var rule in _kb.Rules)
-        {
-            var row = _lstRules.AddRow(rule.Id, Certainty.Format(rule.Cf), rule.ConclusionText);
-            row.Tag = rule;
-        }
-
-        _lblKb.Text = $"{_kb.Name}   ·   {Path.GetFileName(_kbPath)}   ·   состав: {DescribeComposition()}   ·   фактов {_kb.Facts.Count}, правил {_kb.Rules.Count}";
-
-        ComputeForward();
-        _lstFacts.CurrentCell = null;
-        _lstFacts.ClearSelection();
-        _suppress = false;
-
-        UpdateAnswer();
-        UpdateStatus();
-        _lblCenter.Text = "Прямой вывод: рабочая память (входные факты)";
-        ShowExplanation(IntroText());
-    }
-
-    private void ChooseComposition()
-    {
-        if (_kbBase is null) return;
-        var heroes = _kbBase.GetSort("hero")?.Values ?? new List<string>();
-        using var dialog = new CompositionForm(heroes, _enemies);
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-
-        _enemies.Clear();
-        _enemyCf.Clear();
-        _enemies.AddRange(dialog.Selected);
-        ApplyComposition();
-    }
-
-    // ============================================ кнопки: прямой режим ===
-
-    private Predicate? GetForwardGoal()
-    {
-        if (_cmbFwdGoal.SelectedIndex <= 0) return null;
-        if (_cmbFwdGoal.SelectedItem is not GoalDefinition goal) return null;
-        return goal.Pattern;
-    }
-
-    private static string GoalReachedText(ForwardResult f)
-    {
-        if (!f.GoalReached) return string.Empty;
-        var stepInfo = f.GoalReachedAtStep == 0 ? "уже во входных фактах" : $"шаг {f.GoalReachedAtStep}";
-        return $"Цель достигнута: {f.ReachedGoal!.Text} cf={Certainty.Format(f.ReachedGoal.Cf)} ({stepInfo})";
-    }
-
-    private void ForwardPlay()
-    {
-        if (_kb is null) { ShowExplanation("Сначала загрузите базу знаний."); return; }
-        if (_forward is null) ComputeForward();
-        if (_forward is null) return;
-
-        if (_forward.Firings.Count == 0)
-        {
-            // Анимировать нечего — показываем итог (в т.ч. случай «цель во входных»)
-            ForwardShowResult();
-            return;
-        }
-
-        if (_anim == AnimMode.Forward)
-        {
-            StopAnimation();
-            return;
-        }
-
-        if (_step >= _forward.Firings.Count) ResetForwardAnimation();
-
-        _reverseResult = null;
-        _anim = AnimMode.Forward;
-        _timer.Interval = Math.Max(20, (int)_numSpeed.Value);
-        _timer.Start();
-        _btnFwdPlay.Text = "■ Стоп";
-        _lblCenter.Text = "Прямой вывод: пошаговое срабатывание продукций";
-    }
-
-    private void ForwardStep(bool manual = true)
-    {
-        if (_kb is null) return;
-        if (_forward is null) ComputeForward();
-        if (_forward is null) return;
-
-        if (_forward.Firings.Count == 0)
-        {
-            UpdateStatus();
-            _lblCenter.Text = _forward.GoalReached
-                ? GoalReachedText(_forward)
-                : "Прямой вывод: нет срабатываний";
-            return;
-        }
-
-        if (manual && _anim == AnimMode.Forward) StopAnimation();
-        if (_step >= _forward.Firings.Count) ResetForwardAnimation();
-
-        ApplyFiring(_forward.Firings[_step]);
-        _step++;
-        UpdateStatus();
-
-        if (_forward.GoalReached && _step >= _forward.GoalReachedAtStep)
-        {
-            StopAnimation();
-            _lblCenter.Text = GoalReachedText(_forward);
-        }
-    }
-
-    private void ForwardShowResult()
-    {
-        if (_kb is null) return;
-        if (_forward is null) ComputeForward();
-        if (_forward is null) return;
-
-        StopAnimation();
-        _reverseResult = null;
-        _bulk = true;
-        while (_step < _forward.Firings.Count)
-        {
-            ApplyFiring(_forward.Firings[_step]);
-            _step++;
-        }
-        _bulk = false;
-
-        foreach (var fact in _forward.Memory.Facts) UpsertFactRow(fact);
-
-        // Цель имеет приоритет над «лучшей рекомендацией»
-        if (_forward.GoalReached)
-        {
-            ShowFactGraph(_forward.ReachedGoal!);
-            _lblCenter.Text = GoalReachedText(_forward);
-            ShowExplanation(TextExplainer.ExplainFact(_forward.ReachedGoal!) + "\n\n" + BuildForwardSummary());
-            UpdateStatus();
-            return;
-        }
-
-        var best = _forward.Memory.Facts
-            .Where(f => f.Atom.Name.Equals("recommended", StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(f => f.Cf)
-            .FirstOrDefault();
-
-        if (best is not null)
-        {
-            ShowFactGraph(best);
-            _lblCenter.Text = $"Лучшая рекомендация: {best.Text}   (cf={Certainty.Format(best.Cf)}, слой {best.Depth})";
-            ShowExplanation(TextExplainer.ExplainFact(best) + "\n\n" + BuildForwardSummary());
-        }
-        else
-        {
-            _graph.SetTree(null);
-            _lblCenter.Text = $"Прямой вывод завершён: {_forward.Memory.Count} фактов, {_forward.Firings.Count} срабатываний";
-            ShowExplanation(BuildForwardSummary());
-        }
-
-        UpdateStatus();
-    }
-
-    private void ResetForwardAnimation()
-    {
-        _step = 0;
-        _factRows.Clear();
-        _lstFacts.Rows.Clear();
-        if (_forward is not null)
-            foreach (var fact in _forward.Memory.Facts.Where(f => !f.IsDerived)) AddFactRow(fact);
-        _graph.SetTree(null);
-    }
-
-    private void ComputeForward()
-    {
-        if (_kb is null) return;
-
-        StopAnimation();
-
-        _forward = new ForwardChainer().Run(_kb, new ForwardOptions { Goal = GetForwardGoal() });
-        _relevantFacts = null;
-
-        _suppress = true;
-        RefreshFactList();
-        _suppress = false;
-
-        _plan = new BuildPlanner().Build(_forward, _kb);
-        FillBuild();
-        UpdateStatus();
-    }
-
-    private void RefreshFactList()
-    {
-        if (_forward is null) return;
-        _factRows.Clear();
-        _lstFacts.Rows.Clear();
-
-        var filter = _chkFwdHide.Checked ? GetRelevantFacts() : null;
-
-        foreach (var fact in _forward.Memory.Facts)
-        {
-            if (filter is not null && !filter.Contains(fact.Text)) continue;
-            if (fact.IsDerived && _step == 0) continue;  // ещё не «сыграно» — не показываем
-            AddFactRow(fact);
-        }
-    }
-
-    /// <summary>Факты, ведущие к recommended / pick / second_pick (для режима «Скрыть лишнее»).</summary>
-    private HashSet<string> GetRelevantFacts()
-    {
-        if (_relevantFacts is not null) return _relevantFacts;
-        if (_forward is null) return _relevantFacts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        var relevant = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var stack = new Stack<Fact>();
-
-        foreach (var fact in _forward.Memory.Facts)
-            if (IsResultPredicate(fact.Atom.Name)) stack.Push(fact);
-
-        while (stack.Count > 0)
-        {
-            var f = stack.Pop();
-            if (!relevant.Add(f.Text)) continue;
-            foreach (var p in f.Premises) stack.Push(p);
-        }
-
-        return _relevantFacts = relevant;
-    }
-
-    private static bool IsResultPredicate(string name) =>
-        name.Equals("recommended", StringComparison.OrdinalIgnoreCase) ||
-        name.Equals("pick", StringComparison.OrdinalIgnoreCase) ||
-        name.Equals("second_pick", StringComparison.OrdinalIgnoreCase);
-
-    private void ApplyFiring(Firing firing)
-    {
-        foreach (var conclusion in firing.Conclusions) UpsertFactRow(conclusion);
-
-        var last = firing.Conclusions.LastOrDefault();
-        if (last is not null && !_bulk)
-        {
-            ShowFactGraph(last);
-            ShowExplanation(TextExplainer.ExplainFiring(firing) + "\n" + TextExplainer.ExplainFact(last));
-        }
-    }
-
-    private string BuildForwardSummary()
-    {
-        if (_forward is null) return string.Empty;
-
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine("ПРЯМОЙ ВЫВОД — ИТОГ");
-        sb.AppendLine($"Срабатываний продукций: {_forward.Firings.Count}");
-        sb.AppendLine($"Фактов в рабочей памяти: {_forward.Memory.Count} (входных {_forward.InputCount}, выведено {_forward.DerivedCount})");
-        sb.AppendLine($"Слоёв вывода: {_forward.Layers}, проходов: {_forward.Passes}");
-        sb.AppendLine($"Заблокировано повторных срабатываний: {_forward.BlockedRepeats}");
-        sb.AppendLine($"Циклических поддержек (не учтены в cf): {_forward.CircularSupports}");
-        sb.AppendLine($"Время: {_forward.ElapsedMs} мс" + (_forward.LimitReached ? "  ⚠ достигнут лимит фактов" : string.Empty));
-
-        if (_forward.Goal is not null)
-        {
-            sb.AppendLine();
-            if (_forward.GoalReached)
-            {
-                var stepInfo = _forward.GoalReachedAtStep == 0
-                    ? "уже во входных фактах"
-                    : $"шаг {_forward.GoalReachedAtStep}";
-                sb.AppendLine($"ЦЕЛЬ {_forward.Goal} ДОСТИГНУТА: {_forward.ReachedGoal!.Text} " +
-                              $"cf={Certainty.Format(_forward.ReachedGoal.Cf)} ({stepInfo})");
-            }
-            else
-            {
-                sb.AppendLine($"ЦЕЛЬ {_forward.Goal} НЕ ДОСТИГНУТА за {_forward.Firings.Count} срабатываний");
-            }
-            sb.AppendLine();
-        }
-
-        if (_plan is not null)
-        {
-            sb.AppendLine();
-            sb.Append(_plan.Explain());
-        }
-        return sb.ToString();
-    }
-
-    // =========================================== кнопки: обратный режим ===
-
-    private void BackwardPlay()
-    {
-        if (_kb is null) { ShowExplanation("Сначала загрузите базу знаний."); return; }
-
-        if (_anim == AnimMode.Backward)
-        {
-            StopAnimation();
-            return;
-        }
-
-        if (_currentBackward is null)
-        {
-            ComputeBackward();
-            if (_currentBackward is null) return;
-            ShowBackward(_currentBackward, animate: true, revealAll: false);
-            return;
-        }
-
-        // Если дерево уже было раскрыто до конца — начинаем анимацию с начала
-        if (_reveal == int.MaxValue || _reveal >= _revealMax)
-        {
-            _reveal = 0;
-            _graph.Reveal(0);
-        }
-
-        _anim = AnimMode.Backward;
-        _timer.Interval = Math.Max(20, (int)_numSpeed.Value / 3);
-        _timer.Start();
-        _btnBwdPlay.Text = "■ Стоп";
-    }
-
-    private void BackwardStep(bool manual = true)
-    {
-        if (_kb is null) return;
-
-        if (_currentBackward is null)
-        {
-            ComputeBackward();
-            if (_currentBackward is null) return;
-            ShowBackward(_currentBackward, animate: false, revealAll: false);
-            _reveal = 0;
-            _graph.Reveal(0);
-            return;
-        }
-
-        if (manual && _anim == AnimMode.Backward) StopAnimation();
-
-        // Если дошли до конца — сбрасываем на начало, иначе показываем следующий узел
-        if (_reveal == int.MaxValue || _reveal >= _revealMax)
-        {
-            _reveal = 0;
-            _graph.Reveal(0);
-        }
-        else
-        {
-            _reveal++;
-            _graph.Reveal(_reveal);
-        }
-    }
-
-    private void BackwardShowResult()
-    {
-        if (_kb is null) return;
-
-        if (_currentBackward is null)
-        {
-            ComputeBackward();
-            if (_currentBackward is null) return;
-        }
-
-        ShowBackward(_currentBackward, animate: false, revealAll: true);
-    }
-
-    /// <summary>Считает обратный вывод без анимации. Результаты — в списке слева.</summary>
-    private void ComputeBackward()
-    {
-        if (_kb is null) return;
-        if (_cmbGoals.SelectedItem is not GoalDefinition goal) { ShowExplanation("Выберите цель."); return; }
-        if (_forward is null) ComputeForward();
-
-        StopAnimation();
-        _reverseResult = null;
-        Cursor = Cursors.WaitCursor;
-        _backward.Clear();
-        _lstResults.Rows.Clear();
+        _focusFact = null;
         _currentBackward = null;
+        _bwdSteps.Clear();
+        _bwdOrder.Clear();
+        _bwdStarts.Clear();
 
+        _refreshing = true;
         try
         {
-            var facts = _forward!.Memory.InputOnly();
-            var engine = new BackwardEngine();
-            var instances = BackwardSolver.EnumerateInstances(goal, _kb);
+            _lstFacts.Rows.Clear();
+            _lstResults.Rows.Clear();
 
-            foreach (var instance in instances)
-            {
-                var result = engine.Solve(_kb, facts, instance);
-                if (result.Proven && result.Cf >= 0.1) _backward.Add(result);
-            }
-
-            _backward.Sort((a, b) => b.Cf.CompareTo(a.Cf));
-
-            foreach (var result in _backward.Take(400))
-            {
-                var row = _lstResults.AddRow(result.Goal.ToString(), Certainty.Format(result.Cf), result.Layers.ToString());
-                row.Tag = result;
-            }
-
-            _lblCenter.Text = $"Обратный вывод: доказано {_backward.Count} целей из {instances.Count} подстановок";
-
-            if (_backward.Count == 0)
-            {
-                ShowExplanation($"Цель {goal} не доказана ни при одной подстановке.\n" +
-                                "Проверьте, что в сценарии есть факты enemy(...) и что цель соответствует заключению правил.");
-                _graph.SetTree(null);
-                UpdateAnswer();
-                return;
-            }
-
-            _segments.SelectedIndex = 2;
-            _lstResults.Rows[0].Selected = true;
-            _lstResults.CurrentCell = _lstResults.Rows[0].Cells[0];
-            _currentBackward = _backward[0];
+            _lstRules.Rows.Clear();
+            if (_kb is not null)
+                foreach (var rule in _kb.Rules)
+                    _lstRules.Rows.Add(rule.Id, rule.ConditionText, rule.ConclusionText);
         }
         finally
         {
-            Cursor = Cursors.Default;
+            _refreshing = false;
         }
 
-        UpdateAnswer();
+        _graph.SetTree(null);
+        _graph.ResetView();
+        ClearBlocks(_mode == Mode.Forward ? ForwardBlockHint : BackwardBlockHint);
+        if (_kb is not null) _txtExplain.Text = BuildKbSummary(_kb);
         UpdateStatus();
     }
 
-    private void ShowBackward(BackwardResult result, bool animate, bool revealAll)
+    // ================================================================ Forward ===
+
+    private void ToggleForward()
     {
-        _reverseResult = null;
-        _currentBackward = result;
-        _currentFact = null;
-        _graph.FullTree = !_chkBwdHide.Checked;
+        if (_kb is null) return;
 
-        var root = BuildBackwardGraph(result.Root, _graph.FullTree);
-        _revealMax = MaxId(root);
-
-        var rejected = CountRejected(result.Root);
-        var cycles = CountCycles(result.Root);
-
-        StopAnimation();
-
-        if (animate)
+        if (_animRunning)
         {
-            _reveal = 0;
-            _graph.SetTreeAnimated(root, 0);
-            _anim = AnimMode.Backward;
-            _timer.Interval = Math.Max(20, (int)_numSpeed.Value / 3);
-            _timer.Start();
-            _btnBwdPlay.Text = "■ Стоп";
+            PauseAnimation();
+            return;
         }
-        else if (revealAll)
+
+        if (_forward is null)
         {
-            _reveal = int.MaxValue;
-            _graph.SetTree(root);
+            RunForward();
+            if (_forward is null) return;
+        }
+
+        // анимация закончилась — начинаем просмотр заново
+        if (_step >= _forward.Firings.Count)
+        {
+            _step = 0;
+            _reveal = 0;
+            _focusFact = null;
+            RefreshForwardView();
+        }
+
+        StartAnimation();
+    }
+
+    private void StepForward()
+    {
+        if (_kb is null) return;
+        PauseAnimation();
+        if (_forward is null)
+        {
+            RunForward();
+            if (_forward is null) return;
+        }
+        AdvanceForward();
+    }
+
+    private void ShowAllForward()
+    {
+        if (_kb is null) return;
+        if (_forward is null) RunForward();
+        if (_forward is null) return;
+        PauseAnimation();
+        _reveal = _forward.Firings.Count;
+        _step = _reveal;
+        _focusFact = _forward.Firings.Count > 0
+            ? _forward.Firings[^1].Conclusions.LastOrDefault()
+            : null;
+        RefreshForwardView();
+        ShowFactsTab();
+    }
+
+    private void RunForward()
+    {
+        if (_kb is null) return;
+
+        Predicate? goal = null;
+        if (_cmbFwdGoal.SelectedIndex > 0 && _cmbFwdGoal.SelectedItem is string text)
+        {
+            var fake = TryParsePredicate(text);
+            goal = fake;
+        }
+
+        var opt = new ForwardOptions
+        {
+            MaxPasses = 200,
+            MaxFacts = 50_000,
+            MaxMatches = Matcher.DefaultMaxMatches,
+            Goal = goal
+        };
+
+        _forward = new ForwardChainer().Run(_kb, opt);
+        _step = 0;
+        _reveal = 0;
+        _focusFact = null;
+        RefreshForwardView();
+        UpdateStatus();
+    }
+
+    private void AdvanceForward()
+    {
+        if (_forward is null) return;
+        if (_step >= _forward.Firings.Count)
+        {
+            PauseAnimation();
+            return;
+        }
+
+        var firing = _forward.Firings[_step];
+        _step++;
+        _reveal = _step;
+
+        var conclusion = firing.Conclusions.LastOrDefault(c => c.IsDerived)
+                         ?? firing.Conclusions.LastOrDefault();
+        if (conclusion is not null) _focusFact = conclusion;
+
+        RefreshForwardView();
+    }
+
+    private void RefreshForwardView()
+    {
+        _refreshing = true;
+        try
+        {
+            _lstFacts.Rows.Clear();
+            foreach (var fact in RevealedFacts())
+                _lstFacts.Rows.Add(fact.Text, fact.IsDerived ? $"слой {fact.Depth}" : "входной");
+        }
+        finally
+        {
+            _refreshing = false;
+        }
+
+        BuildForwardGraph();
+        UpdateStatus();
+    }
+
+    /// <summary>Факты, выведенные к текущему шагу анимации (входные видны сразу).</summary>
+    private IEnumerable<Fact> RevealedFacts()
+    {
+        if (_forward is null)
+        {
+            if (_kb is null) yield break;
+            foreach (var fact in _kb.Facts) yield return fact;
+            yield break;
+        }
+
+        foreach (var fact in _forward.Memory.Facts)
+            if (RevealStep(fact) <= _reveal)
+                yield return fact;
+    }
+
+    /// <summary>Шаг вывода, на котором факт появился (0 — входной).</summary>
+    private static int RevealStep(Fact fact)
+        => fact.IsDerived && fact.Derivations.Count > 0 ? fact.Derivations[0].Step : 0;
+
+    private void BuildForwardGraph()
+    {
+        var focus = ResolveForwardFocus();
+
+        if (focus is null)
+        {
+            _graph.SetTree(null);
         }
         else
         {
-            _reveal = 0;
-            _graph.SetTreeAnimated(root, 0);
+            var nextId = 0;
+            var root = BuildProofNode(focus, ref nextId, new HashSet<string>(StringComparer.OrdinalIgnoreCase), 0);
+            _graph.SetTree(root, resetView: !_animRunning && _graph.Visible);
         }
 
-        var suffix = rejected > 0
-            ? $"   ·   отклонено ветвей: {rejected}" +
-              (cycles > 0 ? $", из них циклов: {cycles}" : string.Empty) +
-              (_chkBwdHide.Checked ? "   ·   снят «Скрыть лишнее» — показать все ветви" : string.Empty)
-            : string.Empty;
-
-        _lblCenter.Text = $"Доказательство цели: {result.Goal}   (cf={Certainty.Format(result.Cf)}, слоёв {result.Layers})" + suffix;
-        ShowExplanation(TextExplainer.ExplainBackward(result, includeRejected: true));
-        UpdateAnswer();
+        BuildForwardBlocks(focus);
     }
 
-    private void ShowSelectedResult()
+    /// <summary>Фокус прямого вывода: выбранный пользователем факт либо последний выведенный к шагу.</summary>
+    private Fact? ResolveForwardFocus()
     {
-        if (_suppress) return;
-        if (_lstResults.SelectedRows.Count == 0) return;
-        if (_lstResults.SelectedRows[0].Tag is not BackwardResult result) return;
-        ShowBackward(result, animate: false, revealAll: true);
+        if (_forward is null) return null;
+
+        if (_focusFact is not null && RevealStep(_focusFact) <= _reveal) return _focusFact;
+
+        return _forward.Firings
+            .Take(_reveal)
+            .SelectMany(f => f.Conclusions)
+            .LastOrDefault(c => c.IsDerived);
     }
 
-    private void OnTick()
+    /// <summary>Блоки прямого вывода: слой — глубина факта, подпись — правило, плашка — шаг.</summary>
+    private void BuildForwardBlocks(Fact? focus)
     {
-        if (_anim == AnimMode.Forward)
+        if (_forward is null)
         {
-            if (_forward is null || _step >= _forward.Firings.Count)
-            {
-                StopAnimation();
-                UpdateStatus();
-                if (_forward is { GoalReached: true }) _lblCenter.Text = GoalReachedText(_forward);
-                return;
-            }
-            ForwardStep(manual: false);
+            ClearBlocks(ForwardBlockHint);
             return;
         }
 
-        if (_anim == AnimMode.Backward)
+        var goals = new HashSet<string>(
+            _kb?.Goals.Select(g => g.Pattern.Key) ?? Enumerable.Empty<string>(),
+            StringComparer.OrdinalIgnoreCase);
+
+        // «Все факты» — вся рабочая память к текущему шагу, иначе только доказательство фокуса.
+        var facts = _graphScope.SelectedIndex == 1 || focus is null
+            ? RevealedFacts().ToList()
+            : ProofFacts(focus);
+
+        var nodes = new List<BlockNode>(facts.Count);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var fact in facts)
         {
-            if (_reveal == int.MaxValue || _reveal >= _revealMax)
+            if (!seen.Add(fact.Key)) continue;
+
+            nodes.Add(new BlockNode
             {
-                _reveal = int.MaxValue;
-                _graph.Reveal(int.MaxValue);
-                StopAnimation();
-                return;
-            }
-
-            _reveal += 2;
-            if (_reveal >= _revealMax)
-            {
-                _reveal = int.MaxValue;
-                _graph.Reveal(int.MaxValue);
-                StopAnimation();
-                return;
-            }
-
-            _graph.Reveal(_reveal);
-        }
-    }
-
-    private void StopAnimation()
-    {
-        _timer.Stop();
-        _anim = AnimMode.None;
-        _btnFwdPlay.Text = "▶ Играть";
-        _btnBwdPlay.Text = "▶ Играть";
-    }
-
-    // ======================================================== факты ===
-
-    private void AddFactRow(Fact fact)
-    {
-        if (_factRows.ContainsKey(fact.Text)) return;
-        var row = _lstFacts.AddRow(fact.Text, Certainty.Format(fact.Cf), fact.Depth.ToString(),
-            fact.IsDerived ? fact.Rule?.Id ?? "вывод" : "входной");
-        _factRows[fact.Text] = row;
-    }
-
-    private void UpsertFactRow(Fact fact)
-    {
-        if (_chkFwdHide.Checked)
-        {
-            var relevant = GetRelevantFacts();
-            if (!relevant.Contains(fact.Text)) return;
+                Key = fact.Key,
+                Title = fact.Atom.ToString(),
+                Badge = fact.IsDerived ? "шаг " + RevealStep(fact) : string.Empty,
+                Layer = Math.Max(0, fact.Depth),
+                Footer = fact.IsDerived ? $"правило {fact.Rule?.Id ?? "—"}" : "входной факт",
+                Premises = fact.IsDerived
+                    ? fact.Premises.Select(p => p.Key).ToArray()
+                    : Array.Empty<string>(),
+                IsGoal = ReferenceEquals(fact, focus) || goals.Contains(fact.Key),
+                Kind = fact.IsDerived ? BlockKind.Derived : BlockKind.Input,
+                Tooltip = FactTooltip(fact)
+            });
         }
 
-        if (_factRows.TryGetValue(fact.Text, out var row))
-        {
-            row.Cells[1].Value = Certainty.Format(fact.Cf);
-            row.Cells[2].Value = fact.Depth.ToString();
-            row.Cells[3].Value = fact.IsDerived ? fact.Rule?.Id ?? "вывод" : "входной";
-            return;
-        }
-        AddFactRow(fact);
+        var summary = $"Шаг {_step} из {_forward.Firings.Count} · фактов {nodes.Count} · " +
+                      $"слоёв {LayerCount(nodes)}";
+
+        _blockGraph.SetNodes(nodes, summary, ForwardBlockHint, BlockLegend);
     }
 
-    private void ShowSelectedFact()
+    /// <summary>Факты дерева доказательства фокуса; повторы отсекаются — циклы безопасны.</summary>
+    private static List<Fact> ProofFacts(Fact focus)
     {
-        if (_suppress || _forward is null) return;
-        if (_lstFacts.SelectedRows.Count == 0) return;
-        if (!_lstFacts.Focused) return;
-
-        var text = _lstFacts.SelectedRows[0].Cells[0].Value?.ToString();
-        if (string.IsNullOrEmpty(text)) return;
-
-        var fact = _forward.Memory.Facts.FirstOrDefault(f => string.Equals(f.Text, text, StringComparison.OrdinalIgnoreCase));
-        if (fact is null) return;
-
-        ShowFactGraph(fact);
-        ShowExplanation(TextExplainer.ExplainFact(fact));
-    }
-
-    private void ShowFactGraph(Fact fact)
-    {
-        _reverseResult = null;
-        _currentFact = fact;
-        _currentBackward = null;
-        var root = BuildFactGraph(fact);
-        _graph.FullTree = false;
-        _graph.SetTree(root);
-        _lblCenter.Text = "Обоснование факта: " + fact.Text + $"   (cf={Certainty.Format(fact.Cf)}, слой {fact.Depth})";
-    }
-
-    private GraphNode BuildFactGraph(Fact fact)
-    {
-        var created = new Dictionary<string, GraphNode>(StringComparer.OrdinalIgnoreCase);
-        var root = new GraphNode
-        {
-            Id = 0,
-            Text = fact.Text,
-            SubText = fact.IsDerived ? $"{fact.Rule?.Id} · cf={Certainty.Format(fact.Cf)}" : $"вход · cf={Certainty.Format(fact.Cf)}",
-            State = fact.IsDerived ? GraphState.Derived : GraphState.Input,
-            Tooltip = FactTooltip(fact)
-        };
-
-        created[fact.Text] = root;
-        var nextId = 1;
-        var stack = new Stack<(Fact Fact, GraphNode Node, int Depth)>();
-        stack.Push((fact, root, 0));
+        var result = new List<Fact>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var stack = new Stack<Fact>();
+        stack.Push(focus);
 
         while (stack.Count > 0)
         {
-            var (current, node, depth) = stack.Pop();
-            node.Depth = depth;
+            var fact = stack.Pop();
+            if (!seen.Add(fact.Key)) continue;
 
-            foreach (var premise in current.Premises)
-            {
-                if (created.ContainsKey(premise.Text))
-                {
-                    node.Children.Add(new GraphNode
-                    {
-                        Id = nextId++,
-                        Text = "↺ " + premise.Text,
-                        SubText = "повтор — не раскрывается",
-                        State = GraphState.Cyclic,
-                        Depth = depth + 1,
-                        Tooltip = "Цикл: факт уже встречался в этой цепочке, ветвь не раскрывается."
-                    });
-                    continue;
-                }
-
-                var child = new GraphNode
-                {
-                    Id = nextId++,
-                    Text = premise.Text,
-                    SubText = premise.IsDerived
-                        ? $"{premise.Rule?.Id} · cf={Certainty.Format(premise.Cf)}"
-                        : $"вход · cf={Certainty.Format(premise.Cf)}",
-                    State = premise.IsDerived ? GraphState.Derived : GraphState.Input,
-                    Tooltip = FactTooltip(premise)
-                };
-
-                created[premise.Text] = child;
-                node.Children.Add(child);
-                stack.Push((premise, child, depth + 1));
-            }
+            result.Add(fact);
+            foreach (var premise in fact.Premises) stack.Push(premise);
         }
 
-        return root;
+        return result;
+    }
+
+    /// <summary>Дерево доказательства: узел — факт, дети — посылки сработавшего правила.</summary>
+    private static GraphNode BuildProofNode(Fact fact, ref int nextId, HashSet<string> path, int depth)
+    {
+        var node = new GraphNode
+        {
+            Id = nextId++,
+            Text = fact.Text,
+            State = fact.IsDerived ? GraphState.Derived : GraphState.Input,
+            SubText = fact.IsDerived
+                ? $"правило {fact.Rule?.Id ?? "—"} · слой {fact.Depth}"
+                : "исходный факт",
+            Tooltip = FactTooltip(fact)
+        };
+
+        if (!fact.IsDerived || depth >= 12) return node;
+
+        if (!path.Add(fact.Key))
+        {
+            node.State = GraphState.Cyclic;
+            node.SubText = "цикл";
+            return node;
+        }
+
+        foreach (var premise in fact.Premises)
+            node.Children.Add(BuildProofNode(premise, ref nextId, path, depth + 1));
+
+        path.Remove(fact.Key);
+        return node;
     }
 
     private static string FactTooltip(Fact fact)
     {
+        if (!fact.IsDerived) return $"{fact.Text}\nвходной факт";
+
         var sb = new System.Text.StringBuilder();
         sb.AppendLine(fact.Text);
-        sb.AppendLine($"cf={Certainty.Format(fact.Cf)} · слой {fact.Depth}");
-
-        if (fact.IsDerived && fact.Rule is not null)
-        {
-            sb.AppendLine($"правило {fact.Rule.Id}" +
-                          (string.IsNullOrWhiteSpace(fact.Rule.Why) ? string.Empty : " — " + fact.Rule.Why));
-        }
-        else sb.AppendLine("входной факт");
-
-        return sb.ToString().TrimEnd();
+        sb.AppendLine($"правило {fact.Rule?.Id ?? "—"} · слой {fact.Depth}");
+        if (!string.IsNullOrWhiteSpace(fact.Rule?.Why)) sb.AppendLine(fact.Rule!.Why);
+        if (fact.Premises.Count > 0)
+            sb.AppendLine("посылки: " + string.Join(", ", fact.Premises.Select(p => p.Text)));
+        return sb.ToString();
     }
 
-    private void ShowSelectedRule()
+    // ================================================================ Backward ===
+
+    private void ToggleBackward()
     {
-        if (_suppress) return;
-        if (_lstRules.SelectedRows.Count == 0) return;
-        if (_lstRules.SelectedRows[0].Tag is not Rule rule) return;
+        if (_kb is null) return;
 
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine($"Правило {rule.Id}");
-        sb.AppendLine($"Коэффициент уверенности правила: {Certainty.Format(rule.Cf)}");
-        sb.AppendLine();
-        sb.AppendLine("ЕСЛИ:");
-        foreach (var condition in rule.Conditions) sb.AppendLine($"   {condition}");
-        sb.AppendLine("ТО:");
-        foreach (var conclusion in rule.Conclusions) sb.AppendLine($"   {conclusion}");
-
-        if (!string.IsNullOrWhiteSpace(rule.Why))
+        if (_animRunning)
         {
-            sb.AppendLine();
-            sb.AppendLine("Смысл правила:");
-            sb.AppendLine("   " + rule.Why);
-        }
-        if (rule.SourceFile is not null)
-        {
-            sb.AppendLine();
-            sb.AppendLine($"Источник: {Path.GetFileName(rule.SourceFile)}:{rule.Line}");
-        }
-
-        _reverseResult = null;
-        _lblCenter.Text = "Правило " + rule.Id;
-        _graph.SetTree(null);
-        ShowExplanation(sb.ToString());
-    }
-
-    private void ShowSegment()
-    {
-        var index = _segments.SelectedIndex;
-        _lstFacts.Visible = index == 0;
-        _lstRules.Visible = index == 1;
-        _lstResults.Visible = index == 2;
-        _lstBuild.Visible = index == 3;
-
-        if (index == 3) ShowPlan();
-
-        if (index == 2 && _lstResults.Rows.Count == 0 && !_suppress)
-            ShowExplanation("Обратный вывод ещё не выполнялся.\nВыберите цель сверху и нажмите «▶ Играть» или «⏩ Результат».");
-    }
-
-    private void FillBuild()
-    {
-        _lstBuild.Rows.Clear();
-        if (_plan is null) return;
-
-        foreach (var item in _plan.Chosen)
-        {
-            var row = _lstBuild.AddRow(item.Item, item.Slot, Certainty.Format(item.Cf),
-                item.Need + (item.Active ? " · активный" : string.Empty));
-            row.Tag = item;
-        }
-
-        foreach (var item in _plan.SecondWave)
-        {
-            var row = _lstBuild.AddRow(item.Item, item.Slot, Certainty.Format(item.Cf),
-                item.Need + (item.Active ? " · активный" : string.Empty) +
-                (item.Reason is null ? string.Empty : " · " + item.Reason));
-            row.Tag = item;
-        }
-    }
-
-    private void ShowPlan()
-    {
-        if (_plan is null)
-        {
-            ShowExplanation("Сборка ещё не рассчитана: выполните прямой вывод.");
-            return;
-        }
-        _reverseResult = null;
-        _lblCenter.Text = "Сборка предметов под состав противника";
-        _graph.SetTree(null);
-        ShowExplanation(_plan.Explain());
-    }
-
-    // =========================================================== reverse ===
-
-    private async void ChooseItemAndShowTargets()
-    {
-        if (_reverseCts is not null)
-        {
-            _reverseCts.Cancel();
+            PauseAnimation();
             return;
         }
 
-        if (_kbBase is null)
+        if (_backward.Count == 0)
         {
-            ShowExplanation("База знаний не загружена.\nНажмите «Открыть БЗ…» и выберите файл data/deadlock_kb.txt.");
-            return;
+            RunBackward();
+            if (_bwdSteps.Count == 0) return;
         }
 
-        var items = _kbBase.GetSort("item")?.Values ?? new List<string>();
-        if (items.Count == 0)
+        if (_bwdReveal >= _bwdSteps.Count)
         {
-            ShowExplanation("В базе знаний нет объявленного сорта item — нечего выбирать.");
-            return;
+            _bwdReveal = 1;
+            RefreshBackwardView();
         }
 
-        var preselected = _plan?.BestCounter?.Item;
-        using var dialog = new ItemPickerForm(items, preselected);
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-
-        var selectedItem = dialog.SelectedItem;
-
-        _reverseCts = new CancellationTokenSource();
-        _btnItemTargets.Text = "Отмена";
-        _btnItemTargets.Enabled = true;
-        Cursor = Cursors.WaitCursor;
-        _lblCenter.Text = $"Обратный запрос: считаю {selectedItem}…";
-
-        var progress = new Progress<string>(msg =>
-        {
-            _lblCenter.Text = $"Обратный запрос: {selectedItem} · {msg}";
-        });
-
-        try
-        {
-            var options = new ReverseQueryOptions
-            {
-                MaxDepth = 8,
-                MaxNodes = 1_500,
-                Cancellation = _reverseCts.Token,
-                Progress = progress
-            };
-
-            var result = await Task.Run(() => ReverseQuery.Run(_kbBase, selectedItem, options),
-                _reverseCts.Token);
-
-            StopAnimation();
-            _reverseResult = result;
-            _graph.FullTree = false;
-            _graph.SetTree(BuildReverseOverviewGraph(result, false, _kbBase));
-
-            _lblCenter.Text = $"Обратный запрос: предмет {result.Item} → " +
-                              $"{result.FullyCovered.Count()} полных контров, {result.Dangerous.Count()} опасных";
-            ShowExplanation(result.ExplainBestTargets());
-
-            _statusLeft.Text = $"Предмет {result.Item}: закрывает {result.FullyCovered.Count()} героев";
-            _statusMid.Text = $"Опасных для предмета: {result.Dangerous.Count()}   ·   всего героев: {result.Heroes.Count}";
-            _statusRight.Text = string.Empty;
-        }
-        catch (OperationCanceledException) { _lblCenter.Text = "Обратный запрос отменён"; }
-        catch (Exception ex) { MessageBox.Show(this, ex.Message, "Обратный запрос", MessageBoxButtons.OK, MessageBoxIcon.Error); }
-        finally
-        {
-            _reverseCts?.Dispose();
-            _reverseCts = null;
-            _btnItemTargets.Text = "Предмет → враги";
-            _btnItemTargets.Enabled = true;
-            Cursor = Cursors.Default;
-        }
+        StartAnimation();
     }
 
-    private static GraphNode BuildReverseOverviewGraph(ReverseResult result, bool showHeroCounter, KnowledgeBase kb, int maxHeroes = 15)
+    private void StepBackward()
     {
-        var root = new GraphNode
+        if (_kb is null) return;
+        PauseAnimation();
+        if (_backward.Count == 0)
         {
-            Id = 0,
-            Text = $"предмет {result.Item}",
-            SubText = $"героев: {result.Heroes.Count} · полный контр: {result.FullyCovered.Count()} · " +
-                      $"опасных: {result.Dangerous.Count()}",
-            State = GraphState.Derived,
-            Depth = 0,
-            Tooltip = $"Обратный запрос: против каких героев {result.Item} закрывает больше всего угроз."
+            RunBackward();
+            if (_bwdSteps.Count == 0) return;
+        }
+        AdvanceBackward();
+    }
+
+    private void ShowAllBackward()
+    {
+        if (_kb is null) return;
+        if (_backward.Count == 0) RunBackward();
+        PauseAnimation();
+        _bwdReveal = _bwdSteps.Count;
+        RefreshBackwardView();
+        ShowResultsTab();
+    }
+
+    private void RunBackward()
+    {
+        if (_kb is null) return;
+
+        var opt = new BackwardOptions
+        {
+            MaxDepth = 14,
+            MaxNodes = 30_000,
+            UseMemo = true,
+            ReuseMemo = true,
+            MaxGoalInstances = 4000
         };
 
-        var heroes = result.Heroes
-            .Where(h => !h.NoThreats)
-            .OrderByDescending(h => h.Covered)
-            .ThenByDescending(h => h.FullyCountered)
-            .ThenBy(h => h.Hero, StringComparer.OrdinalIgnoreCase)
-            .Take(maxHeroes)
-            .ToList();
+        var goals = new List<GoalDefinition>();
+        if (_cmbGoals.SelectedIndex > 0 && _cmbGoals.SelectedIndex - 1 < _kb.Goals.Count)
+            goals.Add(_kb.Goals[_cmbGoals.SelectedIndex - 1]);
+        else
+            goals.AddRange(_kb.Goals);
 
-        var nextId = 1;
-        foreach (var hero in heroes)
+        // Обратный вывод идёт от исходных фактов базы, а не от памяти прямого вывода:
+        // иначе любая цель уже лежит в памяти и дерево вырождается в один узел.
+        var solutions = BackwardSolver.SolveAll(_kb, BuildInitialMemory(_kb), goals, opt);
+
+        _backward.Clear();
+        foreach (var group in solutions)
+            _backward.AddRange(group.Results);
+
+        // Раскрытие идёт по узлам дерева в порядке «цель → её посылки → посылки посылок»,
+        // чтобы было видно, как из предмета-ответа выводятся герои, против которых он играет.
+        _bwdSteps.Clear();
+        _bwdOrder.Clear();
+        _bwdStarts.Clear();
+
+        foreach (var result in _backward)
         {
-            var heroNode = new GraphNode
+            _bwdStarts.Add(_bwdSteps.Count);
+            foreach (var node in BreadthFirst(result.Root))
             {
-                Id = nextId++,
-                Text = hero.Hero,
-                SubText = hero.TargetLabel,
-                State = hero.FullyCountered ? GraphState.Proven
-                      : hero.Dangerous ? GraphState.Failed
-                      : GraphState.Derived,
-                Depth = 1,
-                Tooltip = $"Герой {hero.Hero}\nПокрыто угроз: {hero.Covered} из {hero.TotalThreats}"
-            };
-
-            foreach (var tag in hero.CoveredTags)
-                heroNode.Children.Add(new GraphNode
-                {
-                    Id = nextId++,
-                    Text = tag,
-                    SubText = "закрыто",
-                    State = GraphState.Proven,
-                    Depth = 2,
-                    Tooltip = $"{hero.Hero} · {tag}: предмет {result.Item} закрывает"
-                });
-
-            foreach (var tag in hero.UncoveredTags)
-                heroNode.Children.Add(new GraphNode
-                {
-                    Id = nextId++,
-                    Text = tag,
-                    SubText = "не закрыто",
-                    State = GraphState.Failed,
-                    Depth = 2,
-                    Tooltip = $"{hero.Hero} · {tag}: предмет не защищает"
-                });
-
-            root.Children.Add(heroNode);
+                _bwdOrder[node] = _bwdSteps.Count;
+                _bwdSteps.Add((result, node));
+            }
         }
 
-        return root;
+        _bwdReveal = _bwdSteps.Count > 0 ? 1 : 0;
+        _currentBackward = null;
+        RefreshBackwardView();
+        UpdateStatus();
     }
 
-    // ============================================ построение дерева ===
-
-    private static GraphNode BuildBackwardGraph(SearchNode root, bool expandRejected)
+    /// <summary>Обход дерева поиска по уровням: цель, её посылки, посылки посылок и т. д.</summary>
+    private static IEnumerable<SearchNode> BreadthFirst(SearchNode root)
     {
-        var map = new Dictionary<SearchNode, GraphNode>();
-        var order = new List<SearchNode>();
-        var stack = new Stack<(SearchNode Node, bool Done)>();
-        stack.Push((root, false));
+        var queue = new Queue<SearchNode>();
+        queue.Enqueue(root);
+
+        while (queue.Count > 0)
+        {
+            var node = queue.Dequeue();
+            yield return node;
+            foreach (var child in node.Children) queue.Enqueue(child);
+        }
+    }
+
+    /// <summary>Рабочая память только из исходных фактов базы — стартовое состояние обратного вывода.</summary>
+    private static WorkingMemory BuildInitialMemory(KnowledgeBase kb)
+    {
+        var memory = new WorkingMemory();
+        foreach (var fact in kb.Facts)
+            memory.AddInput(new Fact(fact.Atom, FactOrigin.Input) { DisplayName = fact.DisplayName });
+        return memory;
+    }
+
+    private void AdvanceBackward()
+    {
+        if (_bwdSteps.Count == 0) return;
+        if (_bwdReveal >= _bwdSteps.Count)
+        {
+            PauseAnimation();
+            return;
+        }
+        _bwdReveal++;
+        RefreshBackwardView();
+    }
+
+    private void RefreshBackwardView()
+    {
+        var started = 0;
+        for (var i = 0; i < _bwdStarts.Count; i++)
+            if (_bwdStarts[i] < _bwdReveal) started++;
+
+        _refreshing = true;
+        try
+        {
+            _lstResults.Rows.Clear();
+            foreach (var result in _backward.Take(started))
+                _lstResults.Rows.Add(
+                    result.Goal.ToString(),
+                    BackwardStateText(result),
+                    result.NodesVisited.ToString(),
+                    result.CycleHits.ToString(),
+                    result.BranchSwitches.ToString());
+
+            // Снимаем автовыбор первой строки: иначе при показе вкладки «Результаты»
+            // отложенный SelectionChanged перебивает дерево графа деревом первой цели.
+            _suppressResultSelect = true;
+            _lstResults.ClearSelection();
+            _lstResults.CurrentCell = null;
+        }
+        finally
+        {
+            _refreshing = false;
+        }
+
+        BuildBackwardGraph();
+        UpdateStatus();
+    }
+
+    private void BuildBackwardGraph()
+    {
+        if (_bwdReveal <= 0 || _bwdSteps.Count == 0)
+        {
+            _graph.SetTree(null);
+            ClearBlocks(BackwardBlockHint);
+            return;
+        }
+
+        var index = Math.Min(_bwdReveal, _bwdSteps.Count) - 1;
+        var focus = _bwdSteps[index].Result;
+
+        // Выбор пользователя в таблице приоритетнее автоматического,
+        // но шаг и подсказка должны относиться к той же цели.
+        if (_currentBackward is not null)
+        {
+            var i = _backward.IndexOf(_currentBackward);
+            if (i >= 0 && i < _bwdStarts.Count && _bwdStarts[i] < _bwdReveal)
+            {
+                focus = _currentBackward;
+                var end = i + 1 < _bwdStarts.Count ? _bwdStarts[i + 1] : _bwdSteps.Count;
+                index = Math.Min(_bwdReveal, end) - 1;
+            }
+        }
+
+        var id = 0;
+        var root = ConvertBackwardNode(focus.Root, ref id);
+        _graph.SetTree(root, resetView: !_animRunning && _graph.Visible);
+
+        ShowExplanation(BackwardExplanation(focus, index));
+        BuildBackwardBlocks(focus);
+    }
+
+    /// <summary>
+    /// Блоки обратного вывода: посылки слева, цель справа (слой = глубина до листьев минус глубина узла),
+    /// поэтому стрелки идут в ту же сторону, что и в прямом выводе.
+    /// </summary>
+    private void BuildBackwardBlocks(BackwardResult focus)
+    {
+        var nodes = new List<BlockNode>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        if (_graphScope.SelectedIndex == 1)
+        {
+            // «Все цели» — все доказательства, раскрытые к текущему шагу.
+            for (var i = 0; i < _backward.Count && i < _bwdStarts.Count; i++)
+                if (_bwdStarts[i] < _bwdReveal)
+                    CollectBackwardBlocks(_backward[i].Root, nodes, seen);
+        }
+        else
+        {
+            CollectBackwardBlocks(focus.Root, nodes, seen);
+        }
+
+        var summary = $"Цель: {focus.Goal} · {BackwardStateText(focus)} · узлов {nodes.Count} · " +
+                      $"слоёв {LayerCount(nodes)} · переключений {focus.BranchSwitches}";
+
+        _blockGraph.SetNodes(nodes, summary, BackwardBlockHint, BlockLegend,
+            focus.Proven ? Theme.Green : Theme.Amber);
+    }
+
+    /// <summary>Раскладывает раскрытую часть дерева поиска в блоки (итеративно, без рекурсии).</summary>
+    private void CollectBackwardBlocks(SearchNode root, List<BlockNode> nodes, HashSet<string> seen)
+    {
+        var visible = new List<SearchNode>();
+        var stack = new Stack<SearchNode>();
+        stack.Push(root);
 
         while (stack.Count > 0)
         {
-            var (node, done) = stack.Pop();
-            if (done) { order.Add(node); continue; }
-            stack.Push((node, true));
-            foreach (var child in node.Children) stack.Push((child, false));
+            var node = stack.Pop();
+            visible.Add(node);
+            foreach (var child in RevealedChildren(node)) stack.Push(child);
         }
 
-        foreach (var node in order)
+        if (visible.Count == 0) return;
+
+        var maxDepth = visible.Max(n => n.Depth);
+
+        // Ключ узла: цель плюс правило, которым она доказана — одинаковые подцели схлопываются.
+        var keys = new Dictionary<SearchNode, string>();
+        foreach (var node in visible)
+            keys[node] = node.Goal.Key + (node.Rule is null ? string.Empty : "@" + node.Rule.Id);
+
+        foreach (var node in visible)
         {
-            var graph = new GraphNode
+            var key = keys[node];
+            if (!seen.Add(key)) continue;
+
+            nodes.Add(new BlockNode
             {
-                Id = node.Id,
-                Text = node.Negated ? "НЕ " + node.Goal : node.Goal.ToString(),
-                SubText = SubText(node),
-                State = MapState(node),
-                Tooltip = TooltipFor(node)
-            };
-
-            foreach (var child in node.Children)
-                if (map.TryGetValue(child, out var childGraph)) graph.Children.Add(childGraph);
-
-            map[node] = graph;
+                Key = key,
+                Title = node.Goal.ToString(),
+                Badge = BackwardBadge(node),
+                Layer = maxDepth - node.Depth,
+                Footer = node.Fact is not null ? "факт из базы"
+                    : node.Rule is not null ? $"правило {node.Rule.Id}"
+                    : node.Note ?? string.Empty,
+                Premises = RevealedChildren(node).Select(c => keys[c]).ToArray(),
+                IsGoal = ReferenceEquals(node, root),
+                Kind = BackwardKind(node),
+                Tooltip = BackwardTooltip(node)
+            });
         }
 
-        var built = map[root];
-        var depthStack = new Stack<(GraphNode Node, int Depth)>();
-        depthStack.Push((built, 0));
-        while (depthStack.Count > 0)
+        // Предотвращённые циклы: ветвь отброшена, но на схеме видно, где поиск замкнулся.
+        if (_bwdReveal < _bwdSteps.Count) return;
+
+        foreach (var node in visible)
         {
-            var (node, depth) = depthStack.Pop();
-            node.Depth = depth;
-            foreach (var child in node.Children) depthStack.Push((child, depth + 1));
-        }
-
-        var nextId = map.Values.Max(g => g.Id);
-
-        // В полном режиме раскрываем все поддеревья, включая очень глубокие
-        // (там и живут «закопанные» циклы). В компактном — оставляем прежний
-        // небольшой лимит: там на каждую отвергнутую ветвь всё равно
-        // приходится один чип, и глубокие поддеревья не разворачиваются.
-        var budget = expandRejected ? 20_000 : 600;
-
-        foreach (var (search, graph) in map)
-        {
-            if (search.RejectedAttempts.Count == 0) continue;
-
-            foreach (var attempt in search.RejectedAttempts)
+            var number = 0;
+            foreach (var attempt in node.RejectedAttempts)
             {
-                if (expandRejected)
+                if (!attempt.CyclePrevented) continue;
+
+                var key = keys[node] + "⟲" + number++;
+                if (!seen.Add(key)) continue;
+
+                var tooltip = new System.Text.StringBuilder();
+                tooltip.AppendLine("Цикл предотвращён: ветвь замкнута, поиск переиграл её по следующей продукции.");
+                tooltip.AppendLine($"Продукция {attempt.Rule.Id}: {attempt.Reason}");
+                foreach (var cyclic in attempt.Children) AppendCyclePath(tooltip, cyclic);
+
+                nodes.Add(new BlockNode
                 {
-                    foreach (var child in attempt.Children)
-                    {
-                        var subtree = BuildRejectedNode(child, graph.Depth + 1, attempt, ref nextId, ref budget);
-                        if (subtree is not null) graph.Children.Add(subtree);
-                    }
-                    continue;
-                }
+                    Key = key,
+                    Title = attempt.Children.Count > 0 ? attempt.Children[0].Goal.ToString() : attempt.Rule.Id,
+                    Badge = "⟲",
+                    Layer = Math.Max(0, maxDepth - node.Depth - 1),
+                    Footer = "цикл предотвращён",
+                    Kind = BlockKind.Cyclic,
+                    Tooltip = tooltip.ToString().TrimEnd()
+                });
+            }
+        }
+    }
 
-                var failing = attempt.Children.FirstOrDefault(c => !c.Proven) ?? attempt.Children.FirstOrDefault();
-                if (failing is null) continue;
+    /// <summary>Дети узла, до которых дошла очередь раскрытия.</summary>
+    private IEnumerable<SearchNode> RevealedChildren(SearchNode node)
+    {
+        foreach (var child in node.Children)
+            if (_bwdOrder.TryGetValue(child, out var order) && order < _bwdReveal)
+                yield return child;
+    }
 
-                var isCycle = failing.State == SearchState.Cyclic;
-                var bindings = attempt.Bindings.Count > 0
-                    ? "\nПодстановка: " + string.Join(", ", attempt.Bindings.Select(kv => $"?{kv.Key}={kv.Value}"))
-                    : string.Empty;
+    private static string BackwardBadge(SearchNode node) => node.State switch
+    {
+        SearchState.Cyclic => "⟲ цикл",
+        SearchState.DepthLimit => "предел",
+        SearchState.Failed => "не доказана",
+        _ => string.Empty
+    };
 
-                graph.Children.Add(new GraphNode
+    private static BlockKind BackwardKind(SearchNode node) => node.State switch
+    {
+        SearchState.Cyclic => BlockKind.Cyclic,
+        SearchState.Failed or SearchState.DepthLimit => BlockKind.Failed,
+        _ when node.Fact is not null => BlockKind.Input,   // ветвь замкнулась на факт базы
+        _ => BlockKind.Derived
+    };
+
+    private static string BackwardTooltip(SearchNode node)
+    {
+        var text = new System.Text.StringBuilder();
+        text.AppendLine(node.Label);
+        text.AppendLine($"слой поиска {node.Depth} · {node.State}");
+        if (node.Rule is not null) text.AppendLine($"по правилу {node.Rule.Id}");
+        if (!string.IsNullOrWhiteSpace(node.Note)) text.AppendLine(node.Note);
+        if (node.Fact is not null) text.AppendLine("факт из базы — ветвь замкнута");
+        foreach (var attempt in node.RejectedAttempts)
+            text.AppendLine($"{(attempt.CyclePrevented ? "⟲ цикл предотвращён" : "✘ отклонено")}: " +
+                            $"{attempt.Rule.Id} — {attempt.Reason}");
+        return text.ToString().TrimEnd();
+    }
+
+    private static string BackwardStateText(BackwardResult result)
+    {
+        if (result.Proven)
+            return result.CyclePrevented ? "доказана · цикл обойдён" : "доказана";
+
+        return result.Root.State switch
+        {
+            SearchState.Cyclic => "цикл предотвращён, альтернатив нет",
+            SearchState.DepthLimit => "предел глубины",
+            _ => "не доказана"
+        };
+    }
+
+    /// <summary>Пока дерево растёт — подсказка о текущем шаге, после — полный разбор.</summary>
+    private string BackwardExplanation(BackwardResult focus, int index)
+    {
+        if (_bwdReveal >= _bwdSteps.Count)
+            return TextExplainer.ExplainBackward(focus, includeRejected: true);
+
+        var node = _bwdSteps[index].Node;
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Цель: {focus.Goal}");
+        sb.AppendLine($"Шаг {_bwdReveal} из {_bwdSteps.Count} — раскрываю узел");
+        sb.AppendLine();
+        sb.AppendLine($"  {node.Label}");
+        if (node.Rule is not null) sb.AppendLine($"  по правилу {node.Rule.Id}");
+        if (!string.IsNullOrWhiteSpace(node.Note)) sb.AppendLine($"  {node.Note}");
+        if (node.Fact is not null) sb.AppendLine("  факт из базы — ветвь замкнута");
+        sb.AppendLine();
+        sb.AppendLine("Дальше: " + (node.Children.Count == 0
+            ? "посылок нет"
+            : string.Join(", ", node.Children.Select(c => c.Label))));
+        return sb.ToString();
+    }
+
+    private GraphNode ConvertBackwardNode(SearchNode source, ref int nextId)
+    {
+        var state = source.State switch
+        {
+            SearchState.Proven => source.Negated ? GraphState.Negated : GraphState.Proven,
+            SearchState.Failed => GraphState.Failed,
+            SearchState.Cyclic => GraphState.Cyclic,
+            SearchState.DepthLimit => GraphState.Failed,
+            _ => GraphState.Normal
+        };
+
+        var sub = source.Fact is not null ? "факт из базы"
+            : source.Rule is not null ? $"правило {source.Rule.Id}"
+            : source.Note;
+
+        // Отвергнутые альтернативы не рисуем чипами (они наезжают на соседние
+        // уровни), но показываем их число и полный список в подсказке.
+        if (source.RejectedAttempts.Count > 0)
+            sub = $"{sub} · отклонено {source.RejectedAttempts.Count}";
+
+        var tooltip = new System.Text.StringBuilder();
+        if (!string.IsNullOrEmpty(source.Note)) tooltip.AppendLine(source.Note);
+        foreach (var attempt in source.RejectedAttempts)
+            tooltip.AppendLine(
+                $"{(attempt.CyclePrevented ? "⟲ цикл предотвращён" : "✘ отклонено")}: " +
+                $"{attempt.Rule.Id} — {attempt.Reason}");
+
+        var node = new GraphNode
+        {
+            Id = nextId++,
+            Text = source.Label,
+            SubText = sub ?? string.Empty,
+            State = state,
+            Tooltip = tooltip.Length == 0 ? null : tooltip.ToString().TrimEnd()
+        };
+
+        // Дети появляются только когда до них дошла очередь раскрытия.
+        foreach (var child in source.Children)
+            if (_bwdOrder.TryGetValue(child, out var order) && order < _bwdReveal)
+                node.Children.Add(ConvertBackwardNode(child, ref nextId));
+
+        // Предотвращённые циклы: ветвь отброшена, но на итоговом графе видно,
+        // где именно поиск замкнулся и какая продукция сработала вместо неё.
+        if (_bwdReveal >= _bwdSteps.Count)
+        {
+            foreach (var attempt in source.RejectedAttempts)
+            {
+                if (!attempt.CyclePrevented) continue;
+
+                var head = attempt.Children.Count > 0 ? attempt.Children[0] : null;
+
+                var chipTooltip = new System.Text.StringBuilder();
+                chipTooltip.AppendLine("Цикл предотвращён: ветвь замкнута, поиск переигран по следующей продукции.");
+                chipTooltip.AppendLine($"Продукция {attempt.Rule.Id}: {attempt.Reason}");
+
+                foreach (var cyclic in attempt.Children)
+                    AppendCyclePath(chipTooltip, cyclic);
+
+                node.Children.Add(new GraphNode
                 {
-                    Id = ++nextId,
-                    Text = (isCycle ? "⟲ " : "✕ ") + (failing.Negated ? "НЕ " : "") + failing.Goal,
-                    SubText = $"{attempt.Rule.Id} · отклонено",
-                    State = isCycle ? GraphState.Cyclic : GraphState.Failed,
+                    Id = nextId++,
+                    Text = head?.Label ?? attempt.Rule.Id,
+                    SubText = "цикл предотвращён",
+                    State = GraphState.Cyclic,
                     Rejected = true,
-                    Depth = graph.Depth + 1,
-                    Tooltip = $"Отклонённая ветвь · правило {attempt.Rule.Id}\n" +
-                              (attempt.Rule.Why.Length > 0 ? attempt.Rule.Why + "\n" : string.Empty) +
-                              $"\nПричина: {attempt.Reason}{bindings}"
+                    Tooltip = chipTooltip.ToString().TrimEnd()
                 });
             }
         }
 
-        return built;
+        return node;
     }
 
-    private static GraphNode? BuildRejectedNode(SearchNode node, int depth, RejectedAttempt attempt, ref int nextId, ref int budget)
+    /// <summary>Печатает замкнувшуюся ветвь в подсказку чипа (без рекурсии).</summary>
+    private static void AppendCyclePath(System.Text.StringBuilder sb, SearchNode root)
     {
-        if (budget <= 0) return null;
-        budget--;
+        var stack = new Stack<(SearchNode Node, int Level)>();
+        stack.Push((root, 1));
 
-        var isCycle = node.State == SearchState.Cyclic;
-        var note = string.IsNullOrWhiteSpace(node.Note) ? string.Empty : "\n" + node.Note;
-        var bindings = attempt.Bindings.Count > 0
-            ? "\nПодстановка: " + string.Join(", ", attempt.Bindings.Select(kv => $"?{kv.Key}={kv.Value}"))
-            : string.Empty;
-
-        var graph = new GraphNode
-        {
-            Id = ++nextId,
-            Text = (isCycle ? "⟲ " : "✕ ") + (node.Negated ? "НЕ " : string.Empty) + node.Goal,
-            SubText = isCycle ? $"цикл предотвращён · {attempt.Rule.Id}" : $"{attempt.Rule.Id} · отклонено",
-            State = MapState(node),
-            Rejected = true,
-            Depth = depth,
-            Tooltip = $"Отклонённая ветвь · правило {attempt.Rule.Id}\n" +
-                      (attempt.Rule.Why.Length > 0 ? attempt.Rule.Why + "\n" : string.Empty) +
-                      $"\n{node.Goal} — {StateText(node)}{note}{bindings}"
-        };
-
-        foreach (var child in node.Children)
-        {
-            var childGraph = BuildRejectedNode(child, depth + 1, attempt, ref nextId, ref budget);
-            if (childGraph is not null) graph.Children.Add(childGraph);
-        }
-
-        return graph;
-    }
-
-    private static string StateText(SearchNode node) => node.State switch
-    {
-        SearchState.Cyclic => "цикл предотвращён",
-        SearchState.Failed => "не доказано",
-        SearchState.Proven => "доказано, но правило не применилось",
-        SearchState.DepthLimit => "предел глубины",
-        _ => "в процессе"
-    };
-
-    private static int CountCycles(SearchNode root)
-    {
-        var count = 0;
-        var stack = new Stack<SearchNode>();
-        stack.Push(root);
         while (stack.Count > 0)
         {
-            var node = stack.Pop();
-            if (node.State == SearchState.Cyclic) count++;
-            foreach (var child in node.Children) stack.Push(child);
-            foreach (var attempt in node.RejectedAttempts)
-                foreach (var child in attempt.Children) stack.Push(child);
+            var (node, level) = stack.Pop();
+
+            sb.AppendLine(
+                new string(' ', level * 2) +
+                $"{node.Label} ← {(node.Rule is null ? "факт" : "правило " + node.Rule.Id)}" +
+                (string.IsNullOrEmpty(node.Note) ? string.Empty : $" // {node.Note}"));
+
+            for (var i = node.Children.Count - 1; i >= 0; i--)
+                stack.Push((node.Children[i], level + 1));
         }
-        return count;
     }
 
-    private static int CountRejected(SearchNode root)
+    // ================================================================ Timer/UI ===
+
+    private void OnTimerTick()
     {
-        var count = 0;
-        var stack = new Stack<SearchNode>();
-        stack.Push(root);
-        while (stack.Count > 0)
-        {
-            var node = stack.Pop();
-            count += node.RejectedAttempts.Count;
-            foreach (var child in node.Children) stack.Push(child);
-        }
-        return count;
+        if (!_animRunning) { _timer.Stop(); return; }
+
+        if (_animMode == Mode.Forward) AdvanceForward();
+        else AdvanceBackward();
+
+        var done = _animMode == Mode.Forward
+            ? _forward is not null && _step >= _forward.Firings.Count
+            : _bwdSteps.Count > 0 && _bwdReveal >= _bwdSteps.Count;
+
+        if (done) PauseAnimation();
     }
 
-    private static string TooltipFor(SearchNode node)
+    private void StartAnimation()
     {
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine((node.Negated ? "НЕ " : string.Empty) + node.Goal);
-        sb.AppendLine($"cf={Certainty.Format(node.Cf)} · {node.State}");
-        if (node.Fact is not null) sb.AppendLine("факт рабочей памяти");
-        if (node.Rule is not null)
-            sb.AppendLine($"правило {node.Rule.Id}" +
-                          (string.IsNullOrWhiteSpace(node.Rule.Why) ? string.Empty : " — " + node.Rule.Why));
-        if (!string.IsNullOrWhiteSpace(node.Note)) sb.AppendLine(node.Note);
-        if (node.Truncated) sb.AppendLine("ветвь оборвана ограничением поиска");
-        return sb.ToString().TrimEnd();
+        _animRunning = true;
+        _animMode = _mode;
+        _timer.Interval = (int)_numSpeed.Value;
+        _timer.Start();
+        UpdatePlayButtons();
     }
 
-    private static string SubText(SearchNode node)
+    private void PauseAnimation()
     {
-        if (node.Fact is not null) return $"факт базы · cf={Certainty.Format(node.Cf)}";
-        if (node.Rule is not null) return $"{node.Rule.Id} · cf={Certainty.Format(node.Cf)}";
-        return $"cf={Certainty.Format(node.Cf)}";
+        _timer.Stop();
+        _animRunning = false;
+        UpdatePlayButtons();
     }
 
-    private static GraphState MapState(SearchNode node) => node.State switch
+    private void UpdatePlayButtons()
     {
-        SearchState.Proven => GraphState.Proven,
-        SearchState.Cyclic => GraphState.Cyclic,
-        SearchState.Failed => GraphState.Failed,
-        SearchState.DepthLimit => GraphState.Failed,
-        _ => GraphState.Derived
-    };
-
-    private static int MaxId(GraphNode root)
-    {
-        var max = 0;
-        var stack = new Stack<GraphNode>();
-        stack.Push(root);
-        while (stack.Count > 0)
-        {
-            var node = stack.Pop();
-            if (node.Id > max) max = node.Id;
-            foreach (var child in node.Children) stack.Push(child);
-        }
-        return max;
+        SetButtonText(_btnFwdPlay, _animRunning && _mode == Mode.Forward ? "⏸ Пауза" : "▶ Играть");
+        SetButtonText(_btnBwdPlay, _animRunning && _mode == Mode.Backward ? "⏸ Пауза" : "▶ Играть");
     }
 
-    // ===================================================== объяснения ===
-
-    private string IntroText()
+    private static void SetButtonText(Button button, string text)
     {
-        var warnings = _kb!.Diagnostics.Where(d => d.Severity != DiagnosticSeverity.Info).ToList();
-        var text = $"БЗ: {_kb.Name}\n" +
-                   $"Файл знаний: {string.Join(", ", _kb.Sources.Select(Path.GetFileName))}\n" +
-                   $"Состав противника: {DescribeComposition()}   (выбирается кнопкой «Состав…», 1–6 героев)\n" +
-                   $"Фактов: {_kb.Facts.Count}, правил: {_kb.Rules.Count}, целей: {_kb.Goals.Count}\n\n" +
-                   "Сверху переключаются два режима:\n" +
-                   "  • «Прямой вывод» — факты появляются по шагам, видно каждое срабатывание;\n" +
-                   "  • «Обратный вывод» — доказывает выбранную цель и строит дерево доказательства.\n\n" +
-                   "В каждом режиме есть «▶ Играть / ■ Стоп», «⏭ Шаг», «⏩ Всё сразу» и «Скрыть лишнее».\n" +
-                   "В прямом режиме можно задать цель — вывод остановится при её появлении.\n" +
-                   "«Предмет → враги» — отдельный обратный запрос: какие герои хуже всего переносят выбранный предмет.\n";
+        if (button.Text == text) return;
+        button.Text = text;
+        button.Width = TextRenderer.MeasureText(text, Theme.Ui).Width + 30;
+    }
 
-        if (warnings.Count > 0)
-        {
-            text += "\nЗамечания к базе:\n";
-            foreach (var diagnostic in warnings.Take(6)) text += "  " + diagnostic + "\n";
-        }
-        return text;
+    private void OnForwardGoalChanged() { /* перезапуск не требуется: применяется при RunForward */ }
+
+    private void OnBackwardGoalChanged()
+    {
+        if (_kb is null) return;
+        PauseAnimation();
+        RunBackward();
+    }
+
+    private void OnFactSelected()
+    {
+        if (_refreshing) return;
+        if (_lstFacts.SelectedRows.Count == 0 || _forward is null) return;
+
+        var text = _lstFacts.SelectedRows[0].Cells[0].Value?.ToString();
+        if (string.IsNullOrEmpty(text)) return;
+
+        var fact = _forward.Memory.Facts.FirstOrDefault(f => f.Text == text);
+        if (fact is null) return;
+
+        _focusFact = fact;
+        ShowExplanation(TextExplainer.ExplainFact(fact));
+        BuildForwardGraph();
+    }
+
+    private void OnBackwardSelected()
+    {
+        if (_refreshing || _suppressResultSelect) return;
+        if (_lstResults.SelectedRows.Count == 0 || _backward.Count == 0) return;
+        var idx = _lstResults.SelectedRows[0].Index;
+        if (idx < 0 || idx >= _backward.Count) return;
+        _currentBackward = _backward[idx];
+        BuildBackwardGraph();
+    }
+
+    private void ShowFactsTab()
+    {
+        if (_tabs is not null) _tabs.SelectedIndex = 0;
+    }
+
+    private void ShowResultsTab()
+    {
+        // Сетка при первом показе сама делает текущей первую строку и поднимает
+        // SelectionChanged — это не выбор пользователя, поэтому глушим его.
+        _suppressResultSelect = true;
+        if (_tabs is not null) _tabs.SelectedIndex = 2;
+
+        // Снимаем автовыбор уже после создания окна сетки, иначе клик по первой
+        // строке не даёт SelectionChanged и граф не перестраивается.
+        _lstResults.ClearSelection();
+        _lstResults.CurrentCell = null;
     }
 
     private void ShowExplanation(string text)
     {
-        _txtExplain.SuspendLayout();
-        _txtExplain.Clear();
-        AppendText(text);
-        _txtExplain.SelectionStart = 0;
-        _txtExplain.SelectionLength = 0;
-        _txtExplain.ResumeLayout();
+        _baseExplanation = text;
+        _txtExplain.Text = text;
     }
 
-    private void AppendText(string text)
+    // ================================================================ блоки ===
+
+    /// <summary>Подписи области блок-схемы зависят от режима: у каждого вывода своё «всё».</summary>
+    private void UpdateGraphScopeLabels()
     {
-        foreach (var line in text.Replace("\r\n", "\n").Split('\n'))
+        var keep = _graphScope.SelectedIndex;
+        var old = _suppress;
+        _suppress = true;
+        try
         {
-            _txtExplain.SelectionStart = _txtExplain.TextLength;
-            _txtExplain.SelectionLength = 0;
-            _txtExplain.SelectionColor = ColorFor(line);
-            _txtExplain.AppendText(line + "\n");
+            _graphScope.SetItems(_mode == Mode.Forward
+                ? new[] { "Доказательство", "Все факты" }
+                : new[] { "Дерево цели", "Все цели" });
+            _graphScope.SelectedIndex = keep;
+        }
+        finally
+        {
+            _suppress = old;
         }
     }
 
-    private static Color ColorFor(string line)
+    /// <summary>Перестроить активный вид графа (дерево или блоки) для текущего режима.</summary>
+    private void RefreshGraphView()
     {
-        var trimmed = line.TrimStart();
-        if (line.Contains("ЦЕЛЬ ДОКАЗАНА", StringComparison.OrdinalIgnoreCase)) return Theme.Green;
-        if (line.Contains("ЦЕЛЬ ДОСТИГНУТА", StringComparison.OrdinalIgnoreCase)) return Theme.Green;
-        if (line.Contains("НЕ ДОКАЗАНА", StringComparison.OrdinalIgnoreCase)) return Theme.Red;
-        if (line.Contains("НЕ ДОСТИГНУТА", StringComparison.OrdinalIgnoreCase)) return Theme.Amber;
-        if (trimmed.StartsWith("✔")) return Theme.Green;
-        if (trimmed.StartsWith("✘")) return Theme.Red;
-        if (trimmed.StartsWith("⟲")) return Theme.Purple;
-        if (trimmed.StartsWith("⚠")) return Theme.Amber;
-        if (trimmed.StartsWith("Шаг")) return Theme.Accent;
-        if (trimmed.StartsWith("Расчёт")) return Theme.Amber;
-        if (trimmed.StartsWith("СБОРКА") || trimmed.StartsWith("ПРЯМОЙ ВЫВОД")) return Theme.Accent;
-        if (trimmed.StartsWith("ПРЕДМЕТ:") || trimmed.StartsWith("ЛУЧШИЕ ЦЕЛИ")) return Theme.Accent;
-        if (trimmed.StartsWith("ПРОТИВ КОГО ПЛОХ")) return Theme.Amber;
-        return Theme.Text;
+        if (_mode == Mode.Forward) BuildForwardGraph();
+        else BuildBackwardGraph();
     }
 
-    // ========================================================= статус ===
+    private void ClearBlocks(string hint) => _blockGraph.SetNodes(null, emptyHint: hint);
 
-    private void UpdateAnswer()
+    private const string ForwardBlockHint =
+        "Блоки появятся по мере срабатывания правил.";
+
+    private const string BackwardBlockHint =
+        "Блоки покажут, из чего складывается доказательство цели.";
+
+    private static readonly (string Label, Color Color)[] BlockLegend =
     {
-        // Если в прямом режиме задана цель — показываем её статус
-        if (_mode == Mode.Forward && _forward is not null && _forward.Goal is not null)
-        {
-            if (_forward.GoalReached)
-            {
-                _lblAnswer.ForeColor = Theme.Green;
-                var stepInfo = _forward.GoalReachedAtStep == 0 ? "уже во входных фактах"
-                                                               : $"шаг {_forward.GoalReachedAtStep}";
-                _lblAnswer.Text = $"Цель достигнута: {_forward.ReachedGoal!.Text} " +
-                                  $"cf={Certainty.Format(_forward.ReachedGoal.Cf)} ({stepInfo})";
-            }
-            else
-            {
-                _lblAnswer.ForeColor = Theme.Amber;
-                _lblAnswer.Text = $"Цель {_forward.Goal} НЕ достигнута за {_forward.Firings.Count} срабатываний";
-            }
-            return;
-        }
+        ("входные", Theme.TextMuted),
+        ("угрозы", Theme.Red),
+        ("потребности", Theme.Amber),
+        ("кандидаты", Theme.Purple),
+        ("выбор", Theme.Accent),
+        ("рекомендация", Theme.Green)
+    };
 
-        if (_mode == Mode.Backward)
-        {
-            if (_currentBackward is not null && _currentBackward.Proven)
-            {
-                _lblAnswer.ForeColor = Theme.Green;
-                _lblAnswer.Text = $"Цель: {_currentBackward.Goal} → доказана, cf={Certainty.Format(_currentBackward.Cf)}";
-            }
-            else if (_currentBackward is not null)
-            {
-                _lblAnswer.ForeColor = Theme.Red;
-                _lblAnswer.Text = $"Цель: {_currentBackward.Goal} → не доказана";
-            }
-            else
-            {
-                _lblAnswer.ForeColor = Theme.TextMuted;
-                _lblAnswer.Text = "Обратный вывод: выберите цель и нажмите «▶ Играть»";
-            }
-            return;
-        }
+    /// <summary>Сколько слоёв занято блоками (для итоговой строки).</summary>
+    private static int LayerCount(IReadOnlyList<BlockNode> nodes)
+        => nodes.Count == 0 ? 0 : nodes.Max(n => n.Layer) + 1;
 
-        var best = _plan?.BestCounter;
-        if (best is null)
-        {
-            _lblAnswer.ForeColor = Theme.TextMuted;
-            _lblAnswer.Text = _plan is null
-                ? "Контрпик: —"
-                : "Контрпик: под выбранный состав не выведено ни одного предмета";
-            return;
-        }
+    /// <summary>Клик по узлу дополняет подсказку шага, а не заменяет её.</summary>
+    private void OnNodeClicked(GraphNode node)
+    {
+        var details = string.IsNullOrWhiteSpace(node.Tooltip) ? node.Text : node.Tooltip;
+        _txtExplain.Text = string.IsNullOrEmpty(_baseExplanation)
+            ? details
+            : _baseExplanation.TrimEnd() + Environment.NewLine + Environment.NewLine +
+              "— узел —" + Environment.NewLine + details;
+    }
 
-        _lblAnswer.ForeColor = Theme.Green;
-        _lblAnswer.Text = $"Лучший контрпик: {best.Item}   ·   cf {Certainty.Format(best.Cf)}   ·   закрывает {best.Need}   ·   {best.Slot}, {best.Cost}";
+    private string BuildKbSummary(KnowledgeBase kb)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"База: {kb.Name}");
+        if (!string.IsNullOrEmpty(kb.Description)) sb.AppendLine(kb.Description);
+        sb.AppendLine();
+        sb.AppendLine($"Фактов: {kb.Facts.Count}");
+        sb.AppendLine($"Правил: {kb.Rules.Count}");
+        sb.AppendLine($"Целей: {kb.Goals.Count}");
+        sb.AppendLine();
+        foreach (var d in kb.Diagnostics) sb.AppendLine(d.ToString());
+        return sb.ToString();
     }
 
     private void UpdateStatus()
     {
-        if (_kb is null) { _statusLeft.Text = "База не загружена"; return; }
-
-        var total = _forward?.Memory.Count ?? _kb.Facts.Count;
-        var derived = _forward?.DerivedCount ?? 0;
-        var layers = _forward?.Layers ?? 0;
-        var steps = _forward?.Firings.Count ?? 0;
+        _statusLeft.Text = _kb is null ? "БЗ не загружена" : $"БЗ: {Path.GetFileName(_kbPath ?? "")}";
 
         if (_mode == Mode.Forward)
         {
-            _statusLeft.Text = $"Фактов: {_factRows.Count} из {total} (выведено {derived})";
-            var goalInfo = _forward?.Goal is not null
-                ? (_forward.GoalReached ? "   ·   ✔ цель" : "   ·   ✗ цель")
-                : string.Empty;
-            _statusMid.Text = $"Правил: {_kb.Rules.Count}   ·   слоёв: {layers}   ·   шагов: {_step}/{steps}" +
-                              goalInfo +
-                              (_forward?.LimitReached == true ? "   ·   ⚠ лимит" : string.Empty);
-            _statusRight.Text = _forward is null ? string.Empty : $"{_forward.ElapsedMs} мс";
+            _statusMid.Text = _forward is null
+                ? "Прямой вывод: не запущен"
+                : $"Прямой вывод: шаг {_step} из {_forward.Firings.Count} · фактов {RevealedFacts().Count()} из {_forward.Memory.Count}";
+        }
+        else if (_mode == Mode.Backward)
+        {
+            if (_bwdSteps.Count == 0)
+            {
+                _statusMid.Text = "Обратный вывод: не запущен";
+            }
+            else
+            {
+                var index = Math.Min(_bwdReveal, _bwdSteps.Count) - 1;
+                var focus = index >= 0 ? _bwdSteps[index].Result : null;
+                var state = focus is null ? string.Empty : BackwardStateText(focus);
+
+                _statusMid.Text = $"Обратный вывод: шаг {_bwdReveal} из {_bwdSteps.Count} · {focus?.Goal} · {state}";
+            }
         }
         else
         {
-            _statusLeft.Text = $"Обратный вывод: целей в списке {_backward.Count}";
-            _statusMid.Text = $"Цель: {_cmbGoals.SelectedItem}   ·   узлов в дереве: {(_currentBackward?.NodesVisited ?? 0)}";
-            _statusRight.Text = _currentBackward is null ? string.Empty : $"cf={Certainty.Format(_currentBackward.Cf)}";
+            _statusMid.Text = _clips.Status;
         }
-    }
 
-    private string DescribeComposition()
-        => _enemies.Count == 0 ? "не задан" : string.Join(", ", _enemies) + $" — {_enemies.Count}";
-
-    private static IEnumerable<string> DefaultComposition(KnowledgeBase kb)
-    {
-        var heroes = kb.GetSort("hero")?.Values ?? new List<string>();
-        var preferred = new[] { "Haze", "Seven", "Abrams" };
-        return preferred.Where(p => heroes.Contains(p, StringComparer.OrdinalIgnoreCase)).Take(3);
-    }
-
-    // ========================================================= утилиты ===
-
-    private static Label MakeLabel(string text) => new()
-    {
-        Text = text,
-        AutoSize = true,
-        ForeColor = Theme.TextMuted,
-        Font = Theme.Ui,
-        Margin = new Padding(6, 9, 6, 4),
-        BackColor = Color.Transparent
-    };
-
-    private static Button MakeButton(string text)
-    {
-        var button = new Button
+        _statusRight.Text = _mode switch
         {
-            Text = text,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Theme.PanelAlt,
-            ForeColor = Theme.Text,
-            Font = Theme.Ui,
-            Height = 30,
-            AutoSize = false,
-            Width = TextRenderer.MeasureText(text, Theme.Ui).Width + 26,
-            Margin = new Padding(0, 3, 8, 3),
-            Cursor = Cursors.Hand,
-            UseVisualStyleBackColor = false
+            Mode.Forward => "Прямой вывод",
+            Mode.Backward => "Обратный вывод (от исходных фактов)",
+            _ => "CLIPS: демонстрация примера"
         };
-        button.FlatAppearance.BorderColor = Theme.Border;
-        button.FlatAppearance.MouseOverBackColor = Theme.AccentDim;
-        button.FlatAppearance.MouseDownBackColor = Theme.Accent;
-        return button;
     }
 
-    private static string? FindDataFile(string relative)
+    /// <summary>Подпись в шапке: имя базы знаний либо имя CLIPS-программы.</summary>
+    private void UpdateKbLabel()
     {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        for (var i = 0; i < 8 && dir is not null; i++, dir = dir.Parent)
+        _lblKb.Text = _mode == Mode.Clips
+            ? $"CLIPS: {_clips.ProgramName}"
+            : _kb is null
+                ? "БЗ не загружена"
+                : $"БЗ: {Path.GetFileName(_kbPath ?? "")} · {_kb.Name}";
+    }
+
+    // ================================================================ helpers ===
+
+    private static Button MakeButton(string text) => UiButton.Make(text);
+
+    private static Predicate? TryParsePredicate(string text)
+    {
+        try { return ParsePredicateLoose(text); }
+        catch { return null; }
+    }
+
+    private static Predicate ParsePredicateLoose(string text)
+    {
+        text = text.Trim();
+        if (text.Length == 0) return new Predicate("?");
+        var open = text.IndexOf('(');
+        if (open < 0) return new Predicate(text);
+        if (!text.EndsWith(')')) throw new FormatException();
+        var name = text[..open].Trim();
+        var inner = text[(open + 1)..^1].Trim();
+        if (inner.Length == 0) return new Predicate(name);
+        var parts = inner.Split(',');
+        var args = new List<Arg>();
+        foreach (var part in parts)
         {
-            var candidate = Path.Combine(dir.FullName, relative);
-            if (File.Exists(candidate)) return candidate;
-            if (Directory.Exists(candidate) && relative == "data") return candidate;
+            var token = part.Trim();
+            if (token.Length == 0) continue;
+            args.Add(token.StartsWith('?') ? Arg.Var(token[1..]) : Arg.Const(token));
         }
+        return new Predicate(name, args);
+    }
+
+    private static string? GetArg(string[]? args, string name)
+    {
+        if (args is null) return null;
+        for (var i = 0; i < args.Length - 1; i++)
+            if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase))
+                return args[i + 1];
         return null;
     }
+
+    private static string? FindDataFile(string relativePath)
+    {
+        var candidates = new[]
+        {
+            relativePath,
+            Path.Combine(AppContext.BaseDirectory, relativePath)
+        };
+        return candidates.FirstOrDefault(File.Exists);
+    }
+
+    private static string? ResolveKbPath(string path)
+    {
+        if (Path.IsPathRooted(path)) return File.Exists(path) ? path : null;
+        var candidates = new[]
+        {
+            path,
+            Path.Combine(AppContext.BaseDirectory, path),
+            Path.Combine(Environment.CurrentDirectory, path)
+        };
+        return candidates.FirstOrDefault(File.Exists);
+    }
+
+    // ============================================================ test surface ===
+    // Минимальный доступ для автотестов (tests/ProdModel.UiTests): они создают
+    // настоящую форму и проверяют состояние графа, не полагаясь на пиксели.
+
+    internal GraphNode? TestGraphTree => _graph.Tree;
+
+    internal string TestStatus => _statusMid.Text ?? string.Empty;
+
+    internal string TestExplanation => _txtExplain.Text ?? string.Empty;
+
+    internal int TestReveal => _reveal;
+
+    internal int TestRevealTotal => _mode == Mode.Forward
+        ? _forward?.Firings.Count ?? 0
+        : _bwdSteps.Count;
+
+    internal IReadOnlyList<BackwardResult> TestBackward => _backward;
+
+    internal int TestForwardFacts => _forward?.Memory.Count ?? 0;
+
+    internal void TestLoadKb(string path) => LoadKb(path);
+
+    internal void TestSetMode(bool backward) => _modeBar.SelectedIndex = backward ? 1 : 0;
+
+    /// <summary>0 — прямой вывод, 1 — обратный, 2 — CLIPS.</summary>
+    internal void TestSetModeIndex(int index) => _modeBar.SelectedIndex = index;
+
+    internal ClipsModePanel TestClips => _clips;
+
+    // --- вид «Слои» (блок-схема) ---
+
+    internal BlockGraphPanel TestBlockPanel => _blockGraph;
+
+    internal int TestBlockNodes => _blockGraph.NodeCount;
+
+    internal IReadOnlyList<BlockNode> TestBlockNodesList => _blockGraph.Nodes;
+
+    internal int TestGraphViewIndex => _graphViews.SelectedIndex;
+
+    /// <summary>0 — дерево, 1 — блоки по слоям.</summary>
+    internal void TestSetGraphView(int index) => _graphViews.SelectedIndex = index;
+
+    /// <summary>0 — доказательство выбранной цели, 1 — все факты / все цели.</summary>
+    internal void TestSetBlockScope(int index) => _graphScope.SelectedIndex = index;
+
+    internal int TestBlockScopeIndex => _graphScope.SelectedIndex;
+
+    internal void TestSelectBackwardGoal(int index) => _cmbGoals.SelectedIndex = index;
+
+    internal bool TestSelectBackwardGoalByName(string goal)
+    {
+        for (var i = 0; i < _cmbGoals.Items.Count; i++)
+        {
+            if (!string.Equals(_cmbGoals.Items[i]?.ToString(), goal, StringComparison.OrdinalIgnoreCase))
+                continue;
+            _cmbGoals.SelectedIndex = i;
+            return true;
+        }
+        return false;
+    }
+
+    internal void TestRunBackward() => RunBackward();
+
+    internal void TestStepBackward() => StepBackward();
+
+    internal void TestShowAllBackward() => ShowAllBackward();
+
+    internal void TestRunForward() => RunForward();
+
+    internal void TestStepForward() => StepForward();
+
+    internal void TestShowAllForward() => ShowAllForward();
 }

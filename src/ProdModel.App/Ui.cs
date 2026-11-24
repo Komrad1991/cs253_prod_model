@@ -26,13 +26,57 @@ internal static class Theme
     public static readonly Font MonoSmall = new("Consolas", 8.25f, FontStyle.Regular, GraphicsUnit.Point);
     public static readonly Font Title = new("Segoe UI Semibold", 12f, FontStyle.Regular, GraphicsUnit.Point);
 
-    public static Color CfColor(string text)
+    /// <summary>Цвет статуса во втором столбце таблиц («доказана», «цикл», «слой N»…).</summary>
+    public static Color StatusColor(string text) => text switch
     {
-        if (!double.TryParse(text.Replace(',', '.'), System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var cf))
-            return Text;
+        "доказана" => Green,
+        "цикл" => Amber,
+        "не доказана" => Red,
+        "входной" => TextMuted,
+        _ => Text
+    };
+}
 
-        return cf >= 0.8 ? Green : cf >= 0.5 ? Amber : TextMuted;
+/// <summary>Кнопка в стиле приложения: плоская, с рамкой и подсветкой при наведении.</summary>
+internal static class UiButton
+{
+    public static Button Make(string text)
+    {
+        var button = new Button
+        {
+            Text = text,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Theme.PanelAlt,
+            ForeColor = Theme.Text,
+            Font = Theme.Ui,
+            Height = 30,
+            Width = TextRenderer.MeasureText(text, Theme.Ui).Width + 30,
+            Margin = new Padding(0, 4, 8, 4),
+            Cursor = Cursors.Hand,
+            UseVisualStyleBackColor = false
+        };
+        button.FlatAppearance.BorderColor = Theme.Border;
+        button.FlatAppearance.BorderSize = 1;
+        button.FlatAppearance.MouseOverBackColor = Theme.AccentDim;
+        return button;
+    }
+}
+
+/// <summary>Выпадающий список в стиле приложения — для выбора примера программы.</summary>
+internal static class UiCombo
+{
+    public static ComboBox Make(int width)
+    {
+        return new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Theme.PanelAlt,
+            ForeColor = Theme.Text,
+            Font = Theme.Ui,
+            Width = width,
+            Margin = new Padding(0, 4, 10, 4)
+        };
     }
 }
 
@@ -117,6 +161,17 @@ internal sealed class SegmentBar : Control
         Invalidate();
     }
 
+    /// <summary>Заменить подписи сегментов (например, при смене режима); выбор сбрасывается молча.</summary>
+    public void SetItems(params string[] items)
+    {
+        _items.Clear();
+        _items.AddRange(items);
+        _selected = 0;
+        _hover = -1;
+        Width = PreferredWidth;
+        Invalidate();
+    }
+
     [DefaultValue(0)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public int SelectedIndex
@@ -147,6 +202,16 @@ internal sealed class SegmentBar : Control
         }
 
         return rects;
+    }
+
+    /// <summary>Ширина, при которой видны все «пилюли» целиком.</summary>
+    public int PreferredWidth
+    {
+        get
+        {
+            var rects = LayoutPills();
+            return rects.Count == 0 ? 0 : rects[^1].Right + 2;
+        }
     }
 
     private int IndexAt(Point point)
@@ -304,11 +369,14 @@ internal sealed class DarkGrid : DataGridView
     protected override void OnCellFormatting(DataGridViewCellFormattingEventArgs e)
     {
         base.OnCellFormatting(e);
+        if (e.RowIndex < 0 || e.RowIndex >= Rows.Count ||
+            e.ColumnIndex < 0 || e.ColumnIndex >= Columns.Count)
+            return;
+
         if (e.ColumnIndex == 1 && e.Value is string text)
         {
-            e.CellStyle!.ForeColor = Theme.CfColor(text);
+            e.CellStyle!.ForeColor = Theme.StatusColor(text);
             if (Rows[e.RowIndex].Selected) e.CellStyle.ForeColor = Color.White;
         }
     }
 }
-

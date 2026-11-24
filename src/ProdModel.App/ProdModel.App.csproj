@@ -12,10 +12,27 @@
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ApplicationDefaultFont>Segoe UI, 9pt</ApplicationDefaultFont>
     <SatelliteResourceLanguages>ru;en</SatelliteResourceLanguages>
+    <!-- CLIPSCLRWrapper � ��������� (managed + native) ������ x86, ������� ���� ������� ������ ���� 32-������. -->
+    <PlatformTarget>x86</PlatformTarget>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\ProdModel.Core\ProdModel.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ������ ������ CLIPS ��� ����������� ������. -->
+    <Reference Include="CLIPSCLRWrapper">
+      <HintPath>lib\CLIPSCLRWrapper.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\data\*.clp" Link="data\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ProdModel.UiTests" />
   </ItemGroup>
 
 </Project>
